@@ -1,0 +1,15 @@
+dghs-imgutils
+onnxruntime
+accelerate
+diffusers[torch]
+einops
+ftfy
+huggingface-hub
+imagesize
+lycoris-lora
+opencv-python
+safetensors
+sentencepiece
+toml
+transformers
+voluptuous

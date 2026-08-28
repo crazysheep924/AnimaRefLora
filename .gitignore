@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Model weights are published on HuggingFace, not in git
+models/
+
+# Model weights anywhere else
+*.safetensors
+*.ckpt
+*.pt
+
+# Training runtime outputs
+RunpodTraining/
+experiments/
+*.log
+events.out.tfevents.*
+
+# OS / editor
+.DS_Store

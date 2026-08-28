@@ -1,0 +1,60 @@
+{
+  "checkpoint": "/work/RunpodTraining/experiments/headroi-rope-cpm-f1anticopy-idinject/checkpoints/lora_step_500000.safetensors",
+  "component_counts": {
+    "cpm_gates_zeroed": 0,
+    "frame_adapter_gates_zeroed": 0
+  },
+  "cpm_component_on": true,
+  "features": {
+    "cpm": true,
+    "crepa": true,
+    "crepa_pool": "head_roi",
+    "frames": 3,
+    "head_loss_weight": 2.0,
+    "rope_layout": "disjoint",
+    "rope_refpos": true,
+    "rope_shift": 1.0
+  },
+  "flow_shift": 3.0,
+  "frame_adapter_on": true,
+  "guidance_scale": 4.5,
+  "negative_prompt": "worst quality,low quality,score_1,score_2,score_3,artist name,simple background,lowres,(bad),text,error,fewer,extra,missing,worst quality,jpeg artifacts,low quality,watermark,unfinished,displeasing,oldest,early,signature,artistic error",
+  "outputs": [
+    {
+      "ccip_key": "onfly:0sample.png",
+      "ccip_valid": true,
+      "condition": "correct",
+      "index": 0,
+      "name": "oc_horns",
+      "path": "/work/blog/assets/results/original_outfit/wave/oc_horns/correct_00_oc_horns.png",
+      "ref_frame_mode": "both",
+      "reference_path": "/refs/oc_horns/pick/0sample.png"
+    }
+  ],
+  "prompt": "masterpiece, best quality, score_9, newest, 1girl, solo, upper body portrait, waist up, cropped legs, close framing, waving at viewer, one arm raised, cheerful smile, looking at viewer, adult woman, tall slender, deep wine-purple hair with blue-violet highlights, neat layered bangs, long sidelocks, two thick braids rising from the sides in symmetrical arcs and wrapping around the horn prongs, braided loop hair, short ivory rhinoceros-beetle horn on the forehead splitting into two short prongs, silver hair clasps on the braids, heterochromia, icy cyan left eye, amber-gold right eye, pale skin, calm cold aristocratic expression, small silver earrings, fitted black high-collar gothic bodice, amethyst gemstone brooch at the collar, symmetrical silver piping and geometric seam lines, structured angular puff sleeves, fitted black gloves, silver-trimmed wrist cuffs, wide black corset belt with purple gemstone ornament, charcoal bell-shaped skirt with geometric panels and silver piping, dark purple pleated underskirt, opaque black stockings, black knee-high boots with silver cross-lacing and buckle straps, year2024",
+  "ref_frame_mode": "both",
+  "refs": [
+    {
+      "bucket": [
+        1024,
+        1024
+      ],
+      "index": 0,
+      "latent_hw": [
+        128,
+        128
+      ],
+      "name": "oc_horns",
+      "path": "/refs/oc_horns/pick/0sample.png",
+      "wrong_name": "wrong",
+      "wrong_path": "/work/RunpodTraining/wrong.jpg"
+    }
+  ],
+  "rope_layout_override": null,
+  "rope_shift_override": null,
+  "same_condition_seed": true,
+  "seed": 2700,
+  "steps": 24,
+  "zero_lora": false,
+  "zeroed_lora_params": 0
+}

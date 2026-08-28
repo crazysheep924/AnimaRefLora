@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AnimaRefLoRA 為 Anima 加入參照式動漫角色身分轉移，並研究與緩解參照複製捷徑。">
+  <title>AnimaRefLoRA－參照式角色身分轉移</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <h1>AnimaRefLoRA</h1>
+      <p class="subtitle">為 Anima 擴散變換器加入參照式角色身分轉移能力，並避免參照圖成為複製捷徑。</p>
+      <nav class="buttons" aria-label="專案連結">
+        <a class="button" href="index.html" lang="en">English Website</a>
+        <a class="button" href="#method">方法</a>
+        <a class="button" href="#comparison">500K 結果</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="wrap">
+        <h2>摘要</h2>
+        <p class="abstract">AnimaRefLoRA 讓原本只有文字條件的 Anima 動漫擴散變換器接收單次角色參照。偵測到的頭部裁切與完整參照，會作為乾淨的 in-context 幀放在加噪目標旁；提示詞負責控制姿勢、服裝、表情、身材與場景。核心失敗模式是「參照複製捷徑」：當參照比文字更容易利用時，模型會重現其構圖，而不是完成指定編輯。我們把逐像素內容通路定位到完整參照幀 F₁。訓練配方結合 LoKr、差異加權 flow matching、排除近重複的配對策略、標籤級 caption dropout、結構化參照 dropout，以及針對動漫的身分條件化。本頁使用更新至 500K checkpoint 的模型，以兩名 AI 生成的原創角色為對象，獨立開關外觀文字與影像參照，進行控制式質化評估。</p>
+      </div>
+    </section>
+
+    <section class="alt" id="approach">
+      <div class="wrap">
+        <h2>方法概覽</h2>
+        <p class="lead">身分應主要來自影像，變化應由文字控制。模型接收兩個乾淨參照幀，只對目標幀去噪。</p>
+        <div class="pipeline" role="img" aria-label="頭部與完整參照幀及文字編輯提示輸入 Anima DiT，輸出新目標影像。">
+          <div class="node"><div><strong>影像參照</strong>F₀ 頭部裁切<br>F₁ 完整參照</div></div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="node core"><div><strong>Anima + LoKr</strong>不相交幀位置<br>身分原型 token<br>頭部區域對齊</div></div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="node"><div><strong>生成目標 F₂</strong>相同角色<br>新服裝、姿勢與場景</div></div>
+        </div>
+        <div class="method-notes">
+          <article class="note"><h3>三幀契約</h3><p>頭部、完整參照與目標使用分離的旋轉位置；只有目標加噪並計算損失。</p></article>
+          <article class="note"><h3>身分強化</h3><p>動漫特化 CCIP 特徵轉成原型 token，並在訓練時做頭部區域表徵對齊。</p></article>
+          <article class="note"><h3>反複製訓練</h3><p>差異區域得到較高損失權重；配對與 dropout 防止 F₁ 成為唯一可用訊號。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="method">
+      <div class="wrap">
+        <h2>技術方法</h2>
+        <p class="lead">骨幹維持凍結；可訓練部分是 LoKr adapter、具 gate 的身分 token 與小型表徵投影器。</p>
+        <div class="paper-grid">
+          <article class="paper-block"><p class="section-number">3.1</p><h3>三幀訓練契約</h3><p>同角色參照－目標配對排列成三個潛變量幀：F₀ 是頭部裁切、F₁ 是完整參照、F₂ 是目標。只有 F₂ 加噪與計分；F₀、F₁ 維持乾淨且 timestep 為零。</p><div class="frame-contract"><div><strong>F₀</strong><span>頭部裁切</span><small>乾淨 · 身分細節</small></div><div><strong>F₁</strong><span>完整參照</span><small>乾淨 · 服裝與輪廓</small></div><div class="target"><strong>F₂</strong><span>目標</span><small>加噪 · 在此計算損失</small></div></div></article>
+          <article class="paper-block"><p class="section-number">3.2</p><h3>Rectified-flow 目標</h3><p>令目標潛變量為 <em>z</em><sub>tgt</sub>、高斯噪聲為 ε、噪聲量為 σ，模型迴歸線性插值路徑的 flow velocity，且只作用在目標 token。</p><div class="equation"><span>x<sub>σ</sub> = (1 − σ) z<sub>tgt</sub> + σε</span><span>v* = ε − z<sub>tgt</sub></span></div><p>σ 採 logit-normal：σ = sigmoid(z)、z ~ N(0, 1)（scale 1.0），截斷於 [10⁻³, 1]，另混入 20% 的 [0.8, 1.0] 均勻高噪聲樣本——迫使模型在目標資訊所剩無幾時仍必須使用參照。訓練時不套用 timestep shift；flow shift 3.0 僅用於推論採樣。</p></article>
+          <article class="paper-block"><p class="section-number">3.3</p><h3>凍結 Anima + LoKr</h3><p>Anima 骨幹有 28 個 transformer block、hidden size 2048。骨幹、文字編碼器、VAE 與 modulation 全部凍結；只在 attention、MLP 上訓練 LyCORIS LoKr（dim 512、α 512、factor 4、full_matrix 分解、卷積層 dim 64／α 32；排除 modulation、norm、embedder 與 final layer）與小型身分模組。</p><p>Anima 衍生自 NVIDIA Cosmos-Predict2，繼承影片家族的跨幀 joint self-attention——因此以「額外幀」掛載參照不需要任何架構改動。但同一份繼承也自帶代價：影片先驗期待幀與幀高度相似，把參照原樣複製到目標幀，正是這個骨幹最自然的預設行為（見「避免參照複製捷徑」）。本設計直接重用這條跨幀注意力，而非另加 IP-Adapter／InstantID 式的影像編碼器 adapter——初步測試中通用影像編碼器對動漫角色身分不夠敏感。早期研究其實曾在 Anima 上直接嘗試 IP-Adapter 式 cross-attention 與 reference-KV adapter。這條路線在人工評估下始終無法明顯勝過單純的 in-context LoRA 基線，最終被放棄；本專案因此改採 in-context 路線。</p></article>
+          <article class="paper-block"><p class="section-number">3.4</p><h3>不相交 RoPE 座標</h3><p>若所有幀共用空間 RoPE 網格，座標對齊注意力會形成直接的複製貼上通路。因此 F₀、F₁、F₂ 除了時間索引不同，也使用不相交空間位移——與 Stand-In 的 Conditional Position Mapping（把參照 token 放進獨立座標子空間）同一直覺。實際配置：三幀時間索引 0／1／2；F₂ 置於空間原點，F₀ 沿高度軸位移一整個幀高、F₁ 沿寬度軸位移一整個幀寬（位移量＝latent 網格高／寬 × 1.0），三張幀因此落在互不重疊的座標區塊。位置配置以 JSON sidecar 隨 checkpoint 保存並在推論時驗證。</p></article>
+        </div>
+        <h3 class="subheading">動漫特化身分條件</h3>
+        <div class="technical-grid">
+          <article class="tech-card"><span class="tech-label">TOKENS</span><h3>身分原型 token</h3><p>768 維 CCIP（Contrastive Anime Character Image Pre-training，動漫角色對比預訓練）頭部嵌入投影為四個 token；目標 token 在 blocks 4、12、20 對其 cross-attend，scalar gate 初始化為 10<sup>−3</sup>——精神上最接近 IP-Adapter 的 decoupled cross-attention。具體接線：在這三個 block 的輸出之後，目標幀 token 各加上兩路 gated cross-attention 殘差——(a) frame adapter：query＝目標 token、key/value＝兩張參照幀的全部 token（inner dim 512、8 heads、輸出投影以 std 10⁻⁴ 初始化）；(b) 身分 token：CCIP 嵌入經 L2 正規化與 LayerNorm 後線性投影為 4×512 token，再加上可學習的 base token。兩路各有獨立 scalar gate（皆初始 10⁻³），只作用於目標幀；模組權重隨 LoKr 一併保存。消融段落提到的「frame adapter gate」即 (a) 的 gate。命名註記：此模組在程式碼與 checkpoint 中仍叫 <code>cpm</code>。這個縮寫是早期規劃時從 Stand-In 的 <em>Conditional Position Mapping</em> 借來的，後來漂移到此模組上；至於 Stand-In 原本的 CPM 概念（參照 token 使用不相交座標），則體現在 §3.4 的不相交 RoPE 配置。</p></article>
+          <article class="tech-card"><span class="tech-label">CREPA</span><h3>頭部區域對齊</h3><p>擷取 block 8 的目標 hidden state，在頭部 ROI 池化後經兩層 MLP，以權重 0.1 的 cosine loss 對齊 CCIP。這是表徵對齊（REPA）的單圖變體；名稱沿用其跨幀延伸版 CREPA。</p></article>
+          <article class="tech-card"><span class="tech-label">TEXT</span><h3>Change-only caption</h3><p>移除某角色至少 45% 影像共有的簽名標籤；剩餘標籤只描述姿勢、視角、服裝、身材、表情與場景變化。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="anti-copy">
+      <div class="wrap">
+        <h2>避免參照複製捷徑</h2>
+        <p class="lead">強參照配上弱文字，會讓「直接複製」成為最省力的降低損失方式。訓練配方保留身分，同時降低重製 F₁ 姿勢、取景與像素的報酬。</p>
+        <div class="loss-box"><h3>差異加權目標損失</h3><p>令 <em>d</em> 為經平均正規化的潛變量差異 |z<sub>tgt</sub> − z<sub>ref</sub>|。相同區域多半是複製監督；差異區域才包含文字指定的編輯。</p><div class="equation piecewise"><span>w(d) = 0.2 + 0.8d, &nbsp; d &lt; 1</span><span>w(d) = 1 + 0.5(d − 1), &nbsp; d ≥ 1</span></div><p>權重圖會截斷、在頭部 ROI 保持至少 1，並重新正規化成平均 1；latent L1 也使用同一張圖。另有獨立的頭部 ROI 加權：頭部區域的 MSE 額外乘上最高 2.0 的權重，隨 σ 線性衰減、於 σ ≥ 0.6 退回 1（重噪聲下臉部本就不可回復）；兩張權重圖相乘後一併正規化。</p></div>
+        <div class="technical-grid anti-grid">
+          <article class="tech-card"><span class="tech-label">配對</span><h3>近重複排除</h3><p>以多裁切 256-bit dHash 排除 Hamming 距離 25 以內的候選；找不到有效配對圖的單例「角色 × 解析度」桶則改用空白參照，避免教模型做精確的自我複製。</p></article>
+          <article class="tech-card"><span class="tech-label">CAPTION</span><h3>標籤級 dropout</h3><p>在 50% 的訓練步中，變化標籤（signature subtraction 後剩下的 tag）各自以 0.5 機率保留，且至少留下三個。整句 caption dropout 設為零——空文字配上乾淨參照，等於直接教模型複製。</p></article>
+          <article class="tech-card"><span class="tech-label">參照</span><h3>結構化 dropout</h3><p>25% 樣本會等機率清空 F₀、F₁ 或兩者，解耦兩條參照串流並保留無參照模式。</p></article>
+          <article class="tech-card"><span class="tech-label">F₁ HINGE</span><h3>非頭部反複製 margin</h3><p>σ ≤ 0.8 時，若預測乾淨目標與 F₁ 在頭部以外的 cosine similarity（於 VAE latent 空間計算）超過 0.35，即啟用 hinge；接續訓練全程權重為 0.05。</p></article>
+        </div>
+        <div class="equation total-loss"><span>L = L<sub>diff-MSE</sub> + 0.1 L<sub>latent-L1</sub> + 0.1 L<sub>CREPA</sub> + 0.05 L<sub>F1-hinge</sub></span></div>
+      </div>
+    </section>
+
+    <section id="training-recipe">
+      <div class="wrap">
+        <h2>500K Checkpoint 與訓練配方</h2>
+        <p class="lead">本頁評估使用 500K checkpoint。同一套三幀架構在兩台機器上分四階段訓練：</p>
+        <div class="facts">
+          <div class="fact"><strong>0 → 145K · 租用 H100</strong><p>在 RunPod 上從零跑驗證用訓練（約 1.9&nbsp;秒/步、共約 77&nbsp;小時），配方即第一版報告所述。這一階段確認了訓練設計有效、模型已堪用，因此後續不再租用 H100。</p></div>
+          <div class="fact"><strong>145K → 150K · 本地 RTX 5090</strong><p>長程訓練改到本地閒置的 RTX&nbsp;5090（約 5&nbsp;秒/步）以背景工作方式進行，並加入直接 F₁ 反複製 hinge。</p></div>
+          <div class="fact"><strong>150K → 275K · 本地 RTX 5090</strong><p>再開啟身分配件注入，訓練到早期評測使用的 275K checkpoint。</p></div>
+          <div class="fact"><strong>275K → 500K · 本地 RTX 5090</strong><p>同配方續訓至 500K 完訓，即本頁所有結果使用的 checkpoint。頁面提到的「145K／150K／275K／500K」都是同一條持續訓練的不同階段。</p></div>
+        </div>
+        <div class="table-wrap"><table class="spec-table"><thead><tr><th>組件</th><th>500K 設定</th><th>目的</th></tr></thead><tbody>
+          <tr><td>骨幹</td><td>Anima Base v1.0，凍結</td><td>動漫 DiT prior 與跨幀注意力</td></tr><tr><td>Adapter</td><td>LoKr dim 512、α 512、factor 4</td><td>避免完整微調</td></tr><tr><td>身分模組</td><td>CCIP 768-d → 4 個身分原型 token；block-8 表徵對齊</td><td>token 與表徵層身分強化</td></tr><tr><td>接續資料</td><td>約 138K 影像潛變量</td><td>取自 Danbooru 之動漫插畫，經篩選與清理；從原始約 55K 擴充</td></tr><tr><td>最佳化</td><td>CAME、LR 1×10<sup>−5</sup>、batch 1</td><td>RTX 5090 接續訓練</td></tr><tr><td>數值</td><td>bf16、gradient checkpointing、TF32</td><td>降低顯存需求</td></tr><tr><td>Reference dropout</td><td>0.25，結構化</td><td>訓練 head-only、full-only、無參照</td></tr><tr><td>Caption dropout</td><td>整句 0；標籤級 0.5</td><td>支援短提示又不建立空 caption 複製教材</td></tr><tr><td>配件注入</td><td>真值存在時機率 0.8</td><td>目標圖確實含有該配件（眼鏡、緞帶…）時，把被 signature subtraction 從文字移除的配件詞重新寫回 caption</td></tr><tr><td>F₁ anti-copy</td><td>權重 0.05；margin 0.35；σ cutoff 0.8</td><td>懲罰對完整參照的非頭部相似</td></tr>
+        </tbody></table></div>
+        <p class="disclosure"><strong>Checkpoint 範圍。</strong>500K 是接續 checkpoint，不是新的從零控制實驗；評估結果支持質化能力主張，但不能隔離每項接續功能的因果貢獻。</p>
+      </div>
+    </section>
+
+    <section id="evaluation">
+      <div class="wrap"><h2>角色評估</h2><p class="lead">兩名角色特別以 AI 生成，並刻意採用訓練資料中少見的特殊頭部設定——辮環纏繞叉角的複合頭飾、黑白異色兔耳、異色瞳——用以驗證模型對全新角色設計的轉移能力。參照圖不存在於任何訓練資料，基底模型也不可能事先認識這些角色，「僅參照」的結果因此可以乾淨歸因給參照條件化本身。</p><div class="research-questions"><span><strong>RQ1</strong>沒有外觀文字時，影像參照能否轉移身分？</span><span><strong>RQ2</strong>外觀文字與影像參照是否互補？</span><span><strong>RQ3</strong>身分能否承受場景、服裝、取景、表情與身材的大幅改變？</span></div><div class="character-grid"><article class="character"><img src="assets/references/oc_bunny.png" alt="原創角色・兔耳 參照圖"><h3>OC · 兔耳</h3><p>紅黑雙色長髮、黑白異色兔耳、粉紅愛心短上衣、半透明虹彩外套與大量細飾品。</p></article><article class="character"><img src="assets/references/oc_horns.png" alt="原創角色・叉角 參照圖"><h3>OC · 叉角</h3><p>酒紫雙辮弧起纏繞額前象牙叉角、異色瞳（左青右琥珀）、黑色軍裝式哥德禮服。</p></article></div></div>
+    </section>
+
+    <section class="alt" id="comparison">
+      <div class="wrap">
+        <div class="center"><span class="checkpoint">最新 checkpoint · 500,000 steps</span></div><h2>外觀文字 × 影像參照</h2><p class="lead">每列是 2×2 干預；場景與服裝提示不變，獨立開關角色外觀 tag 與影像參照。</p><div class="legend"><span>同列使用相同採樣噪聲</span><span>外觀詞依角色指定</span><span>關閉參照會清空 F₀、F₁ 與身分 token</span></div>
+        <div class="matrix-definition"><div><strong>無外觀 · 無參照</strong><span>只有基底模型 prior 與編輯提示</span></div><div><strong>有外觀 · 無參照</strong><span>只靠語意 tag 可重建多少特徵</span></div><div><strong>無外觀 · 有參照</strong><span>F₀/F₁ 與 CCIP 單獨攜帶的身分資訊</span></div><div><strong>有外觀 · 有參照</strong><span>文字與視覺身分線索完整結合</span></div></div>
+        <article class="scene" data-scene="seaside_cafe"><h3>地中海海邊咖啡館</h3><p class="prompt">穿白色無袖洋裝、草帽與涼鞋坐在戶外咖啡桌，背景是海洋與九重葛。</p><div class="comparison-host"></div></article>
+        <article class="scene" data-scene="winter_closeup"><h3>冬夜市集・回眸牽手</h3><p class="prompt">第一人稱牽手視角，角色走在前方回眸微笑；雪夜聖誕市集、木製攤位、暖色燈串與落雪。</p><div class="comparison-host"></div></article>
+        <article class="scene" data-scene="petite_studio"><h3>身材編輯 · Petite</h3><p class="prompt">成年女性、小胸、纖腰，穿深藍貼身高領毛衣與米色高腰長褲，在中性攝影棚。</p><div class="comparison-host"></div></article>
+        <article class="scene" data-scene="curvy_studio"><h3>身材編輯 · Curvy</h3><p class="prompt">成年女性、大胸、寬臀，穿相同衣服、在相同攝影棚以相同姿勢站立。</p><div class="comparison-host"></div></article>
+        <aside class="protocol"><strong>控制協定</strong>全部使用 500K checkpoint、24 取樣步、flow shift 3.0、CFG 4.5、1024×1024。正確參照與空白參照格使用相同初始噪聲，每列只改變外觀子句與參照張量；petite／curvy 也共用噪聲、衣服、姿勢與背景。CFG 的對照分支使用 Anima 標準 negative prompt（同一個凍結文字編碼器），不是空 caption。訓練 caption 是動漫社群慣用的 tag 列表格式，本頁提示則是自然語句——凍結的 Anima 骨幹兩者都讀得懂，tag-level dropout 也讓 adapter 習慣短提示，推論時兩種格式皆可用。</aside>
+      </div>
+    </section>
+
+    <section id="original-outfit"><div class="wrap"><h2>原服裝 · 上半身姿勢轉移</h2><p class="lead">維持每位角色的原服裝，提示詞要求新姿勢；輸出均為腰部以上並裁掉腿部。</p><div id="pose-gallery"></div></div></section>
+
+    <section class="alt" id="outfit-edit">
+      <div class="wrap">
+        <h2>姿勢 × 服裝編輯</h2>
+        <p class="lead">同一姿勢提示（跪姿、俯視角、舔手指的輕誘惑表情）下只切換服裝子句：中欄維持參照原服裝，右欄改為和服。兩欄共用 seed，差異可歸因於服裝文字。</p>
+        <p class="lead">本節示範的核心能力：在保留角色特色的前提下，姿勢與動作可以任意指定——包括會被線上生成服務審查或禁止的類型。本模型為本地訓練、本地推論，身分轉移能力覆蓋完整的姿勢與動作空間。</p>
+        <div id="outfit-gallery"></div>
+      </div>
+    </section>
+
+    <section id="ablation">
+      <div class="wrap">
+        <h2>組件開關對照</h2>
+        <p class="lead">同一提示與 seed 下逐一關閉元件：F₀／F₁ 開關控制參照幀輸入，「CPM 關閉」把身分 token gate 歸零，「LoRA 歸零」把 LoKr 權重清空（其餘模組保留）。提示刻意不含外觀描述，身分只能來自被保留的元件。</p>
+        <div id="ablation-gallery"></div>
+        <p class="disclosure"><strong>量化解讀。</strong>關閉各元件與完整系統的輸出差異相差數個量級：LoRA 歸零＝全圖崩壞（約 100% 像素改變）、清空參照幀＝約半圖改變、CPM 關閉＝不到 9% 且不改變身分判讀；frame adapter 的 gate 在訓練中始終接近零。單幀對照中，只留 F₁ 的輸出遠比只留 F₀ 接近完整系統（差異像素 11–27% vs 25–48%）——完整參照幀承載了絕大部分身分資訊，與早期析因「F₁ 是內容通路」一致。跨 checkpoint 追蹤另顯示 CPM 的推論貢獻在訓練中期達到峰值後回落至可忽略；我們把它理解為訓練期的過渡鷹架（反複製損失壓制 F₁ 通路時的身分過渡載體），而非最終推論的必要組件。這些身分模組皆為開發過程中回應當時觀察到的失效而加入並保留（見「限制」）；「僅 LoKr＋反複製訓練配方」的最小配置是否足以達到相同結果，需由從零重訓的減法消融驗證——包括捨棄 F₀ 的 2 幀 F₁-only 變體（注意力成本約降至 4/9，且不再依賴頭部偵測）——列為後續工作。</p>
+      </div>
+    </section>
+
+    <section id="base-swap">
+      <div class="wrap">
+        <h2>跨底模相容性</h2>
+        <p class="lead">Adapter 只在官方 Anima Base v1.0 上訓練。此處把凍結骨幹整個換成社群微調底模（WAI ANIMA v10），LoKr、身分模組與 RoPE 配置原封不動載入，以相同 500K checkpoint、相同提示與 seed 生成新的半身情境：略仰角 bust shot、單眼眨眼、手指愛心、霓虹夜街 bokeh 背景。社群近期出現以層擴充放大的 Anima 變體（在官方 2B 底模上擴充至 2.9B／3B 級）；本 adapter 是否能沿用到這些擴充架構尚未驗證。</p>
+        <div id="baseswap-gallery"></div>
+        <p class="disclosure"><strong>解讀。</strong>參照身分轉移在兩個底模上皆成立——WAI 底模上略弱於官方底模，但仍明顯有效；畫風、上色與光影則跟著底模走。LoKr 與身分模組學到的是「參照條件化行為」的權重增量，換底模等於把同一份增量套在不同的影像先驗上；增量是對著官方權重學的，底模偏離原點越遠、套用誤差越大，輕微的身分弱化正符合預期。只要社群底模維持 Anima 的架構與張量形狀即可直接套用；官方與 ComfyUI 兩種權重命名格式都能直接載入。此為單場景、單 seed 的質化展示；各底模的實際適用程度仍需逐一驗證。</p>
+      </div>
+    </section>
+
+    <section class="alt" id="findings"><div class="wrap"><h2>500K 質化發現</h2><p class="lead">控制格圖用於輸入歸因而非挑選最好看的結果；成對格共用噪聲，因此變化可對應到外觀詞、影像參照或兩者交互作用。</p><div class="findings-grid"><article><strong>外觀文字提供語意結構。</strong><p>文字能加入兔耳、叉角等寫得出來的特徵，但無法還原未寫出的細部裝飾。</p></article><article><strong>影像提供個體身分。</strong><p>參照會帶入色彩配置、臉型與輪廓；臉部在畫面中佔比極小時，身分仍會弱化。</p></article><article><strong>兩者互補。</strong><p>有外觀＋有參照通常最穩定：文字釐清顯著外觀特徵、避免歧義，影像則補上 tag 沒寫到的細節。</p></article><article><strong>不需複製構圖。</strong><p>無論是咖啡館坐姿、近景表情還是成對身材編輯，角色都能正常生成，而不是照搬去背立繪來源圖的構圖。</p></article><article><strong>互動構圖可由文字指定。</strong><p>冬夜市集的 POV 牽手回眸與海濱餵食都能成立——參照是正面立繪，模型仍能生成朝向鏡頭的互動姿勢與表情。</p></article><article><strong>身材可由文字控制。</strong><p>兩角色的 petite／curvy 配對皆出現清楚胸腰臀變化。</p></article></div><p class="disclosure"><strong>解讀界線。</strong>每列只有一個 seed；這些結果展示支援行為與失敗模式，不估計成功率。</p></div></section>
+
+    <section id="diagnosis"><div class="wrap"><h2>早期研究證據</h2><p class="lead">早期研究中促成後續訓練方向的關鍵量測結論。</p><div class="facts"><div class="fact"><strong>整句 caption dropout</strong><p>含整句 dropout 的配方約 10K 步就開始複製，不含者約 25K 步才出現；兩組另有 reference dropout 設定差異，因此並非單變量消融。</p></div><div class="fact"><strong>F₁ 是內容通路</strong><p>16 路析因與分區 NCC 將近逐字的下半身像素定位到完整參照 F₁。</p></div><div class="fact"><strong>近重複是次要因素</strong><p>寬鬆門檻近重複只佔抽樣同角色配對約 0.4%，不足以解釋早期 41% 人工複製率。</p></div></div>
+      <div class="table-wrap compact-table"><table class="spec-table"><thead><tr><th>歷史評測</th><th>觀察</th><th>可下的結論</th></tr></thead><tbody>
+        <tr><td>80K 的 22 參照基準</td><td>9/22 逐字複製（41%）</td><td>早期配方確實有嚴重的捷徑問題。</td></tr>
+        <tr><td>105K：diff 加權＋較低頭部區域損失權重的 resume</td><td>1/22 複製（4.5%）</td><td>與更快離開複製期一致；非單變量因果結果。</td></tr>
+        <tr><td>從零驗證 run（原定 150K，止於 145K）</td><td>複製期約 95K 達峰、100K 後崩落</td><td>訓練動態本身也能降低複製，此處缺乏干預控制。</td></tr>
+      </tbody></table></div></div></section>
+
+    <section class="alt" id="comfyui">
+      <div class="wrap">
+        <h2>ComfyUI 部署</h2>
+        <p class="lead">模型以獨立 ComfyUI 插件 <code>ComfyUI-AnimaRefLora</code> 發佈：載入一張參照圖、輸入提示詞，就能得到與本報告評測管線一致的結果。</p>
+
+        <div class="loss-box">
+          <h3>為什麼不用 ComfyUI 內建採樣器</h3>
+          <p>ComfyUI 內建的 Anima 採樣路徑只支援到 <code>max_h = 120</code> 的 RoPE 位置上限。我們的模型刻意把兩張參照幀與目標幀放在分離的位置座標上（§3.4），需要的座標範圍遠超過 120；硬塞回 120 會讓各幀座標重疊，等於重新打開訓練時特地關掉的「複製貼上」通路。因此插件完全跳過 KSampler，直接用本專案自己的推論迴圈採樣，並使用存放在每個 checkpoint 旁的 RoPE 配置。</p>
+        </div>
+
+        <div class="technical-grid">
+          <article class="tech-card"><span class="tech-label">LOADER</span><h3>Anima RefLora Loader</h3><p>一次載入全部：Anima 底模、訓練好的 LoKr 權重、身分模組、RoPE 配置與 VAE。可選節點可再疊一個一般的 Anima 風格 LoRA。</p></article>
+          <article class="tech-card"><span class="tech-label">ENCODE</span><h3>Anima Ref Encode</h3><p>接收參照圖，偵測頭部，把頭部裁切與整張圖轉成兩張參照幀，並算出 CCIP 身分向量。輸出尺寸在此以 64 像素為步進設定（1024×1024、1024×576、1152×768…）；參照圖採 letterbox 而非裁切，避免裁掉角色邊緣。</p></article>
+          <article class="tech-card"><span class="tech-label">SAMPLER</span><h3>Anima RefLora Sampler</h3><p>用與本頁評測管線相同的採樣迴圈生成圖片——三幀排列與引導方式都與訓練一致。不加額外風格 LoRA 時，輸出與本頁評測管線逐位元相同。</p></article>
+        </div>
+
+        <p>節點流程就是 <em>Load Image → Ref Encode → Sampler</em>，Loader 負責供應模型。建置腳本會把插件打包成約 15&nbsp;MB 的可攜資料夾，內含推論所需的最小程式碼；模型檔放在 ComfyUI 慣用的 <code>models/</code> 目錄。推論已在 32&nbsp;GB 的 RTX&nbsp;5090 上以 1024×1024 測試通過，VRAM 需求隨輸出解析度成長。插件、程式碼與訓練權重皆已公開發佈；權重透過 HuggingFace 散佈。</p>
+      </div>
+    </section>
+
+    <section><div class="wrap limitations"><h2>限制</h2><p>本評估只有兩名角色、四種控制編輯、兩種原服裝姿勢與每列一個 seed；不是身分 benchmark 或使用者研究。500K 是同時更動資料與數個旗標的 continuation，不能把改善歸因於單一組件。參照圖為 AI 生成的原創設計而非自然場景圖；生成參照本身的畫風也可能影響輸出風格。後續應加入多 seed、盲測身分判斷、CCIP 距離、prompt adherence、複製偵測與外部 adapter 基線。</p><p>另需說明，本訓練配方是專案迭代過程中逐步累積而成，並非經過系統性設計的最小組合。開發以「最快取得可用模型」為優先，因此採取疊加式改進——在既有配方上加入新機制後繼續訓練——而非為每項機制進行獨立的控制實驗。各項機制皆為回應開發當下觀察到的特定失效模式而引入，於問題緩解後保留至今；完整堆疊尚未進行由上而下的減法消融。因此部分組件之間可能存在功能重疊或冗餘，更精簡的配方或許足以達到相同效果，所需引入的專有機制與術語亦可隨之減少。本頁如實記錄實際訓練所用的完整系統，而非可運作的最小配方。訓練資料取自 Danbooru；程式碼、ComfyUI 插件與訓練權重皆公開發佈。</p></div></section>
+
+    <section id="references"><div class="wrap references"><h2>精選參考文獻</h2><ol><li>CircleStone Labs and Comfy Org. <a href="https://huggingface.co/circlestone-labs/Anima" target="_blank" rel="noopener">Anima Base v1.0</a>, 2026.</li><li>Lipman et al. <a href="https://arxiv.org/abs/2210.02747" target="_blank" rel="noopener">Flow Matching for Generative Modeling</a>, 2023.</li><li>Liu, Gong, and Liu. <a href="https://arxiv.org/abs/2209.03003" target="_blank" rel="noopener">Flow Straight and Fast</a>, 2022.</li><li>Yeh et al. <a href="https://arxiv.org/abs/2309.14859" target="_blank" rel="noopener">LyCORIS Fine-Tuning</a>, 2024.</li><li>Yu et al. <a href="https://arxiv.org/abs/2410.06940" target="_blank" rel="noopener">Representation Alignment for Generation</a>, 2025.</li><li>Hwang et al. <a href="https://arxiv.org/abs/2506.09229" target="_blank" rel="noopener">Cross-Frame Representation Alignment</a>, 2025.</li><li>Dong and narugo1992. <a href="https://huggingface.co/deepghs/ccip" target="_blank" rel="noopener">CCIP</a>, 2024——模型卡，無正式論文。</li><li>Su et al. <a href="https://arxiv.org/abs/2104.09864" target="_blank" rel="noopener">RoFormer: Enhanced Transformer with Rotary Position Embedding</a>, 2021——RoPE 原始出處；不相交逐幀配置為本專案作法。</li><li>Esser et al. <a href="https://arxiv.org/abs/2403.03206" target="_blank" rel="noopener">Scaling Rectified Flow Transformers (SD3)</a>, 2024——logit-normal σ 取樣的出處。</li><li>Luo et al. <a href="https://arxiv.org/abs/2307.02047" target="_blank" rel="noopener">CAME: Confidence-guided Adaptive Memory Efficient Optimization</a>, 2023——全程使用的優化器。</li><li>Ye et al. <a href="https://arxiv.org/abs/2308.06721" target="_blank" rel="noopener">IP-Adapter</a>, 2023——與本專案 gated 身分 token cross-attention 最接近的先行工作。</li><li>Wang et al. <a href="https://arxiv.org/abs/2401.07519" target="_blank" rel="noopener">InstantID</a>, 2024——§3.3 討論的 encoder 式身分 adapter。</li><li>Xue et al. <a href="https://arxiv.org/abs/2508.07901" target="_blank" rel="noopener">Stand-In: A Lightweight and Plug-and-Play Identity Control for Video Generation</a>, 2025——Conditional Position Mapping（CPM）概念的出處，即本專案不相交 RoPE 配置的先行想法；模組代號「CPM」也源自於此。</li><li>Krawetz. <a href="https://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html" target="_blank" rel="noopener">Kind of Like That</a>（Hacker Factor Blog）, 2013——difference hash（dHash）出處，原始構想來自 D. Oftedal。</li><li>kohya-ss. <a href="https://github.com/kohya-ss/sd-scripts" target="_blank" rel="noopener">sd-scripts</a> — 訓練框架；訓練器建立在其 Anima 模型載入與 LoKr/LoRA 網路模組之上。</li><li>deepghs / narugo1992. <a href="https://github.com/deepghs/imgutils" target="_blank" rel="noopener">dghs-imgutils</a> — 動漫頭部偵測與 CCIP 特徵抽取，用於頭部裁切與身分向量。</li><li>comfyanonymous 與 Comfy Org. <a href="https://github.com/comfyanonymous/ComfyUI" target="_blank" rel="noopener">ComfyUI</a> — 上節插件的部署平台。</li></ol></div></section>
+
+    <section><div class="wrap"><h2>BibTeX</h2><pre>@misc{animareflora2026,
+  title  = {AnimaRefLoRA: Adding Reference-Based Character Identity
+            Transfer to the Anima Diffusion Transformer},
+  author = {{AnimaRefLoRA Project}},
+  year   = {2026},
+  note   = {Technical report}
+}</pre></div></section>
+  </main>
+
+  <footer><div class="wrap">頁面結構參考 <a href="https://ericguo5513.github.io/momask/" target="_blank" rel="noopener">MoMask</a> 與 <a href="https://nerfies.github.io/" target="_blank" rel="noopener">Nerfies</a>。頁內角色皆為 AI 生成之原創設計。本模型的開發與理論分析有使用 AI 工具輔助。</div></footer>
+
+  <script>
+    const characters = [
+      { id: "oc_bunny", name: "OC · 兔耳", ref: "oc_bunny.png", index: "00" },
+      { id: "oc_horns", name: "OC · 叉角", ref: "oc_horns.png", index: "01" }
+    ];
+    const cells = [
+      { label: "無外觀 · 無參照", path: (s,c) => `${s}/no_appearance/blank_${c.index}_${c.id}.png` },
+      { label: "有外觀 · 無參照", path: (s,c) => `${s}/with_appearance/${c.id}/blank_00_${c.id}.png` },
+      { label: "無外觀 · 有參照", path: (s,c) => `${s}/no_appearance/correct_${c.index}_${c.id}.png` },
+      { label: "有外觀 · 有參照", path: (s,c) => `${s}/with_appearance/${c.id}/correct_00_${c.id}.png` }
+    ];
+    for (const section of document.querySelectorAll("[data-scene]")) {
+      const scene = section.dataset.scene;
+      const host = section.querySelector(".comparison-host");
+      for (const character of characters) {
+        const article = document.createElement("article");
+        article.className = "comparison";
+        const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} 參照"><figcaption>參照輸入</figcaption></figure>`]
+          .concat(cells.map(cell => `<figure><img loading="lazy" src="assets/results/${cell.path(scene, character)}" alt="${character.name}：${cell.label}"><figcaption>${cell.label}</figcaption></figure>`));
+        article.innerHTML = `<h4>${character.name}</h4><div class="compare-grid">${figures.join("")}</div>`;
+        host.append(article);
+      }
+    }
+    const poseGallery = document.querySelector("#pose-gallery");
+    const poses = [{ id: "wave", label: "原服裝 · 揮手" }, { id: "crossed_arms", label: "原服裝 · 抱胸" }];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} 參照"><figcaption>參照輸入</figcaption></figure>`]
+        .concat(poses.map(pose => `<figure><img loading="lazy" src="assets/results/original_outfit/${pose.id}/${character.id}/correct_00_${character.id}.png" alt="${character.name}：${pose.label}"><figcaption>${pose.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="pose-grid">${figures.join("")}</div>`;
+      poseGallery.append(article);
+    }
+    const outfitGallery = document.querySelector("#outfit-gallery");
+    const outfits = [
+      { id: "original", label: "原服裝" },
+      { id: "kimono", label: "和服" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} 參照"><figcaption>參照輸入</figcaption></figure>`]
+        .concat(outfits.map(o => `<figure><img loading="lazy" src="assets/results/finger_licking/${o.id}/${character.id}/correct_00_${character.id}.png" alt="${character.name}：${o.label}"><figcaption>${o.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="pose-grid">${figures.join("")}</div>`;
+      outfitGallery.append(article);
+    }
+    const baseswapGallery = document.querySelector("#baseswap-gallery");
+    const baseswapBases = [
+      { id: "anima_base", label: "官方 Anima Base v1.0" },
+      { id: "wai_base", label: "WAI ANIMA v10 底模" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} 參照"><figcaption>參照輸入</figcaption></figure>`]
+        .concat(baseswapBases.map(b => `<figure><img loading="lazy" src="assets/results/base_swap/${b.id}/${character.id}/correct_00_${character.id}.png" alt="${character.name}：${b.label}"><figcaption>${b.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="pose-grid">${figures.join("")}</div>`;
+      baseswapGallery.append(article);
+    }
+    const ablationGallery = document.querySelector("#ablation-gallery");
+    const ablations = [
+      { dir: "baseline", tag: "", label: "完整系統" },
+      { dir: "f0_only", tag: "head_only_", label: "只留 F₀（頭部幀）" },
+      { dir: "f1_only", tag: "full_only_", label: "只留 F₁（完整幀）" },
+      { dir: "no_ref", tag: "blank_", label: "無參照幀" },
+      { dir: "cpm_off", tag: "", label: "CPM 關閉" },
+      { dir: "lora_off", tag: "", label: "LoRA 歸零" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} 參照"><figcaption>參照輸入</figcaption></figure>`]
+        .concat(ablations.map(a => `<figure><img loading="lazy" src="assets/results/ablation/${a.dir}/${character.id}/correct_${a.tag}00_${character.id}.png" alt="${character.name}：${a.label}"><figcaption>${a.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="ablation-grid">${figures.join("")}</div>`;
+      ablationGallery.append(article);
+    }
+  </script>
+</body>
+</html>

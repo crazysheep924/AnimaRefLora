@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AnimaRefLoRA adds reference-based anime character identity transfer to Anima and studies the reference-copy shortcut.">
+  <title>AnimaRefLoRA — Reference-Based Character Identity Transfer</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <h1>AnimaRefLoRA</h1>
+      <p class="subtitle">Adding reference-based character identity transfer to the Anima diffusion transformer—and preventing the reference from becoming a copy shortcut.</p>
+      <nav class="buttons" aria-label="Project links">
+        <a class="button" href="index_zh.html" lang="zh-Hant">中文網頁</a>
+        <a class="button" href="#method">Method</a>
+        <a class="button" href="#comparison">500K Results</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="wrap">
+        <h2>Abstract</h2>
+        <p class="abstract">AnimaRefLoRA gives the text-only Anima anime diffusion transformer a one-shot character reference. A head crop and the full reference image are placed beside the noised target as in-context frames, while the text prompt controls the requested pose, outfit, and scene. The central failure mode is a <em>reference-copy shortcut</em>: when the reference is easier to follow than the prompt, the model can reproduce its composition instead of performing the requested edit. We diagnose the full-reference frame as the main pixel-content pathway and train a LoKr adapter with difference-weighted flow matching, near-duplicate-aware pairing, tag-level caption dropout, structured reference dropout, and anime-specific identity conditioning. This page updates the original development report with a controlled qualitative study of the 500K checkpoint on two AI-generated original characters, explicitly separating appearance words from image-reference conditioning.</p>
+      </div>
+    </section>
+
+    <section class="alt" id="approach">
+      <div class="wrap">
+        <h2>Approach Overview</h2>
+        <p class="lead">Identity should come from images; variation should come from text. The model receives two clean reference frames and denoises only the target frame.</p>
+        <div class="pipeline" role="img" aria-label="Head and full reference frames plus a text edit prompt feed the Anima DiT, which generates a new target image.">
+          <div class="node"><div><strong>Image reference</strong>F₀ head crop<br>F₁ full reference</div></div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="node core"><div><strong>Anima + LoKr adapter</strong>Disjoint frame positions<br>Identity prototype tokens<br>Head-region alignment</div></div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="node"><div><strong>Generated target F₂</strong>Same character<br>New outfit, pose, and scene</div></div>
+        </div>
+        <div class="method-notes">
+          <article class="note"><h3>Three-frame contract</h3><p>The head, full reference, and target occupy separate rotary positions; only the target is noised and scored.</p></article>
+          <article class="note"><h3>Identity reinforcement</h3><p>Anime-specific CCIP features become prototype tokens, with head-region representation alignment during training.</p></article>
+          <article class="note"><h3>Anti-copy training</h3><p>Changed regions receive more loss weight, while pairing and dropout prevent the full reference from becoming the only useful signal.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="method">
+      <div class="wrap">
+        <h2>Method</h2>
+        <p class="lead">AnimaRefLoRA turns Anima's inherited multi-frame attention into a one-shot character-conditioning path. The backbone remains frozen; the trainable parts are a LoKr adapter, gated identity tokens, and a small representation projector.</p>
+
+        <div class="paper-grid">
+          <article class="paper-block">
+            <p class="section-number">3.1</p>
+            <h3>Three-frame training contract</h3>
+            <p>A same-character reference–target pair is arranged as three latent frames. <strong>F₀</strong> is a detected head crop, <strong>F₁</strong> is the full reference, and <strong>F₂</strong> is the target. Only F₂ is noised and scored; F₀ and F₁ remain clean at timestep zero.</p>
+            <div class="frame-contract" aria-label="Three-frame reference training contract">
+              <div><strong>F₀</strong><span>Head crop</span><small>clean · identity detail</small></div>
+              <div><strong>F₁</strong><span>Full reference</span><small>clean · outfit and silhouette</small></div>
+              <div class="target"><strong>F₂</strong><span>Target</span><small>noised · loss applied here</small></div>
+            </div>
+          </article>
+
+          <article class="paper-block">
+            <p class="section-number">3.2</p>
+            <h3>Rectified-flow objective</h3>
+            <p>For target latent <em>z</em><sub>tgt</sub>, Gaussian noise ε, and noise level σ, training constructs the linear interpolation below and regresses its flow velocity. The loss is evaluated on target-frame tokens only.</p>
+            <div class="equation"><span>x<sub>σ</sub> = (1 − σ) z<sub>tgt</sub> + σε</span><span>v* = ε − z<sub>tgt</sub></span></div>
+            <p>σ follows a logit-normal schedule—σ = sigmoid(z) with z ~ N(0, 1) (scale 1.0), clamped to [10⁻³, 1]—with a 20% uniform high-noise mixture over [0.8, 1.0]. This forces the model to use the reference even when little target information remains. No timestep shift is applied during training; the flow shift of 3.0 is inference-only.</p>
+          </article>
+
+          <article class="paper-block">
+            <p class="section-number">3.3</p>
+            <h3>Frozen Anima + LoKr</h3>
+            <p>The Anima backbone has 28 transformer blocks with hidden size 2048. Its weights, text encoder, VAE, and modulation layers are frozen. A LyCORIS LoKr adapter—dimension 512, α 512, factor 4, full-matrix decomposition, conv dim 64 / conv α 32, excluding modulation, norm, embedder, and final layers—is trained on attention and MLP weights, together with the small identity modules.</p>
+            <p>Anima derives from NVIDIA Cosmos-Predict2 and inherits the video family's joint cross-frame self-attention—attaching the reference as extra frames therefore requires no architectural change. The same inheritance carries a cost: the video prior expects consecutive frames to be highly similar, so reproducing the reference verbatim into the target frame is this backbone's most natural default behavior (see the anti-copy section). The design reuses that cross-frame attention instead of adding a separate image-encoder adapter in the style of IP-Adapter or InstantID—general-purpose image encoders were insufficiently sensitive to anime character identity in preliminary tests. In fact, early experiments on this problem tried IP-Adapter-style cross-attention and reference-KV adapters on Anima directly. That line of work never clearly beat a plain in-context LoRA baseline under human evaluation, and its abandonment committed the project to the in-context design.</p>
+          </article>
+
+          <article class="paper-block">
+            <p class="section-number">3.4</p>
+            <h3>Disjoint RoPE coordinates</h3>
+            <p>Placing all frames on the same spatial rotary-position grid gives coordinate-aligned attention a direct copy-and-paste path. F₀, F₁, and F₂ therefore receive disjoint spatial offsets as well as distinct temporal indices—the same intuition as Stand-In's Conditional Position Mapping, which places reference tokens in a separate coordinate subspace. Concretely: the three frames use temporal indices 0/1/2; F₂ sits at the spatial origin, F₀ is displaced by one full frame height along the height axis, and F₁ by one full frame width along the width axis (offset = latent grid height/width × 1.0), so the three frames occupy non-overlapping coordinate tiles. The layout is saved as a JSON sidecar beside every checkpoint and verified during inference.</p>
+          </article>
+        </div>
+
+        <h3 class="subheading">Anime-specific identity conditioning</h3>
+        <div class="technical-grid">
+          <article class="tech-card"><span class="tech-label">TOKENS</span><h3>Identity prototype tokens</h3><p>A 768-dimensional CCIP (Contrastive Anime Character Image Pre-training) head embedding is projected into four identity tokens. Target tokens cross-attend to them at blocks 4, 12, and 20 through learned scalar gates initialized at 10<sup>−3</sup>—closest in spirit to IP-Adapter's decoupled cross-attention. Concretely, after each of those blocks the target-frame tokens receive two gated cross-attention residuals: (a) a frame adapter with queries from the target tokens and keys/values from all tokens of both reference frames (inner dim 512, 8 heads, output projection initialized at std 10⁻⁴), and (b) the identity tokens—the CCIP embedding is L2-normalized, layer-normed, and linearly projected into 4×512 tokens plus learned base tokens. Each path has its own scalar gate (both initialized at 10⁻³) and touches only the target frame; the module weights are saved alongside the LoKr. The "frame-adapter gates" mentioned in the component-toggle section are the gates of path (a). A naming note: in the code and checkpoints this module is still called <code>cpm</code>—an acronym borrowed during early planning from Stand-In's <em>Conditional Position Mapping</em>, which ended up attached to the wrong component. Stand-In's actual CPM idea, disjoint reference coordinates, lives on as the disjoint RoPE layout of §3.4.</p></article>
+          <article class="tech-card"><span class="tech-label">CREPA</span><h3>Head-region alignment</h3><p>Target hidden states captured at block 8 are pooled inside the detected head ROI, projected by a two-layer MLP, and aligned to the CCIP reference embedding with cosine loss weight 0.1. This is a single-image variant of representation alignment (REPA); the name follows its cross-frame extension CREPA.</p></article>
+          <article class="tech-card"><span class="tech-label">TEXT</span><h3>Change-only captions</h3><p>Character-signature tags shared by at least 45% of a character's images are subtracted. The remaining tags describe the image-specific change—pose, view, outfit, body, expression, and scene.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="anti-copy">
+      <div class="wrap">
+        <h2>Preventing the Reference-copy Shortcut</h2>
+        <p class="lead">A strong reference paired with weak text makes copying an easy loss-minimizing strategy. The training recipe preserves identity while reducing the reward for reproducing F₁'s pose, framing, and pixels.</p>
+
+        <div class="loss-box">
+          <h3>Difference-weighted target loss</h3>
+          <p>Let <em>d</em> be the channel-averaged latent difference |z<sub>tgt</sub> − z<sub>ref</sub>|, normalized to mean one. Matching regions are mostly copy supervision, while changed regions contain the text-controlled edit. Their target-frame loss weights are:</p>
+          <div class="equation piecewise"><span>w(d) = 0.2 + 0.8d, &nbsp; d &lt; 1</span><span>w(d) = 1 + 0.5(d − 1), &nbsp; d ≥ 1</span></div>
+          <p>The map is clamped, floored at 1.0 inside the head ROI, and renormalized to mean one, so it redistributes learning without silently increasing the effective learning rate. The auxiliary latent reconstruction L1 term uses the same map. A separate head-ROI boost additionally multiplies the MSE weight inside the head region by up to 2.0, fading linearly back to 1.0 as σ approaches 0.6 (the face is unrecoverable under heavy noise); the two maps are multiplied and renormalized together.</p>
+        </div>
+
+        <div class="technical-grid anti-grid">
+          <article class="tech-card"><span class="tech-label">PAIRING</span><h3>Near-duplicate exclusion</h3><p>A multi-crop 256-bit dHash excludes candidates within Hamming distance 25. Singleton character–resolution-bucket cells (no valid partner image) use a blank reference instead of teaching an exact self-pair copy.</p></article>
+          <article class="tech-card"><span class="tech-label">CAPTION</span><h3>Tag-level dropout</h3><p>On 50% of steps, each change tag surviving signature subtraction is independently retained with probability 0.5, and at least three tags are always kept. Whole-caption dropout is zero because empty text paired with a clean reference explicitly teaches copying.</p></article>
+          <article class="tech-card"><span class="tech-label">REFERENCE</span><h3>Structured dropout</h3><p>On 25% of samples, F₀ only, F₁ only, or both are blanked with equal probability. This decorrelates the reference streams and preserves a usable reference-free branch.</p></article>
+          <article class="tech-card"><span class="tech-label">F₁ HINGE</span><h3>Non-head anti-copy margin</h3><p>At σ ≤ 0.8, a hinge penalty activates when cosine similarity—computed in VAE latent space—between the predicted clean target and F₁ outside the head region exceeds 0.35. Its weight is 0.05 throughout the continuation.</p></article>
+        </div>
+
+        <div class="equation total-loss"><span>L = L<sub>diff-MSE</sub> + 0.1 L<sub>latent-L1</sub> + 0.1 L<sub>CREPA</sub> + 0.05 L<sub>F1-hinge</sub></span></div>
+      </div>
+    </section>
+
+    <section id="training-recipe">
+      <div class="wrap">
+        <h2>500K Checkpoint and Training Recipe</h2>
+        <p class="lead">The evaluation on this page uses the 500K checkpoint. One three-frame architecture ran through four stages on two machines:</p>
+        <div class="facts">
+          <div class="fact"><strong>0 → 145K · rented H100</strong><p>From-scratch validation run on RunPod (≈1.9&nbsp;s/step, ≈77&nbsp;hours) with the recipe of the original report. It confirmed the training design and produced a usable model, so further rented GPU time was unnecessary.</p></div>
+          <div class="fact"><strong>145K → 150K · local RTX 5090</strong><p>Long-horizon training moved to an idle local RTX&nbsp;5090 (≈5&nbsp;s/step) running as a background workload, adding the direct F₁ anti-copy hinge.</p></div>
+          <div class="fact"><strong>150K → 275K · local RTX 5090</strong><p>Continued with identity-accessory injection enabled, up to the 275K checkpoint used in the earlier evaluation.</p></div>
+          <div class="fact"><strong>275K → 500K · local RTX 5090</strong><p>Same recipe continued to the final 500K checkpoint — the one behind every result on this page. The 145K/150K/275K/500K checkpoints are stages of one continuous training lineage.</p></div>
+        </div>
+        <div class="table-wrap">
+          <table class="spec-table">
+            <thead><tr><th>Component</th><th>500K setting</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td>Backbone</td><td>Anima Base v1.0, frozen</td><td>Anime-focused DiT prior and joint multi-frame attention</td></tr>
+              <tr><td>Trainable adapter</td><td>LoKr dim 512, α 512, factor 4</td><td>Adapt attention and MLP layers without full fine-tuning</td></tr>
+              <tr><td>Identity modules</td><td>CCIP 768-d → 4 identity prototype tokens; block-8 representation alignment</td><td>Reinforce identity at token and representation levels</td></tr>
+              <tr><td>Continuation data</td><td>≈138K cached image latents</td><td>Anime illustrations sourced from Danbooru, filtered and cleaned; expanded from the original ≈55K-image study</td></tr>
+              <tr><td>Optimizer</td><td>CAME, learning rate 1×10<sup>−5</sup>, batch 1</td><td>Memory-efficient continuation training</td></tr>
+              <tr><td>Numerics</td><td>bf16, gradient checkpointing, TF32</td><td>Local RTX 5090 execution</td></tr>
+              <tr><td>Reference dropout</td><td>0.25, structured</td><td>Train head-only, full-only, and reference-free behavior</td></tr>
+              <tr><td>Caption dropout</td><td>whole caption 0; tag-level 0.5</td><td>Support short prompts without creating empty-caption copy lessons</td></tr>
+              <tr><td>Accessory injection</td><td>probability 0.8 when present in target</td><td>Re-append signature accessory words (glasses, ribbons, …) that signature subtraction had removed, when the target image actually contains them</td></tr>
+              <tr><td>F₁ anti-copy</td><td>weight 0.05; margin 0.35; σ cutoff 0.8</td><td>Penalize non-head resemblance to the full reference</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="disclosure"><strong>Checkpoint scope.</strong> The 500K file is a continuation checkpoint, not a new controlled from-scratch experiment. Consequently, the evaluation results support qualitative capability claims; they do not isolate the causal contribution of each continuation feature.</p>
+      </div>
+    </section>
+
+    <section id="evaluation">
+      <div class="wrap">
+        <h2>Character Evaluation</h2>
+        <p class="lead">Both characters were deliberately AI-generated with unusual head designs that are rare in training data — a braided-loop headpiece wrapped around a forked horn, mismatched black/white rabbit ears, heterochromia — to test how well the model transfers a completely novel character design. The reference images exist in no training data and the base model cannot know these characters, so reference-only results attribute cleanly to the reference conditioning itself.</p>
+        <div class="research-questions">
+          <span><strong>RQ1</strong> Can the image reference transfer identity when appearance words are absent?</span>
+          <span><strong>RQ2</strong> Do appearance words and the image reference contribute complementary information?</span>
+          <span><strong>RQ3</strong> Can identity survive large changes in scene, outfit, framing, expression, and body shape?</span>
+        </div>
+        <div class="character-grid">
+          <article class="character"><img src="assets/references/oc_bunny.png" alt="Reference artwork of the rabbit-ear original character"><h3>OC · Rabbit Ears</h3><p>Red hair with a black underlayer, mismatched black/white rabbit ears, a pink heart crop top, an iridescent sheer jacket, and dense small accessories.</p></article>
+          <article class="character"><img src="assets/references/oc_horns.png" alt="Reference artwork of the forked-horn original character"><h3>OC · Forked Horn</h3><p>Wine-purple braids looping up around an ivory forked horn, heterochromia (cyan/amber), and a black military-style gothic dress.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="comparison">
+      <div class="wrap">
+        <div class="center"><span class="checkpoint">Latest checkpoint · 500,000 steps</span></div>
+        <h2>Appearance Text × Image Reference</h2>
+        <p class="lead">Each row is a 2×2 intervention. The scene and outfit prompt stay fixed; we independently toggle character-appearance tags and the image reference.</p>
+        <div class="legend" aria-label="Comparison legend"><span>Same sampling noise within a row</span><span>Appearance words are character-specific</span><span>Reference off blanks F₀, F₁, and identity tokens</span></div>
+        <div class="matrix-definition">
+          <div><strong>No appearance · No reference</strong><span>Base-model prior and edit prompt only</span></div>
+          <div><strong>Appearance · No reference</strong><span>What can be reconstructed from semantic tags alone</span></div>
+          <div><strong>No appearance · Reference</strong><span>Identity information carried by F₀/F₁ and CCIP alone</span></div>
+          <div><strong>Appearance · Reference</strong><span>Full system with complementary text and visual identity cues</span></div>
+        </div>
+
+
+        <article class="scene" data-scene="seaside_cafe">
+          <h3>Mediterranean Seaside Café</h3>
+          <p class="prompt">Sitting at an outdoor café in a white sleeveless sundress, straw hat, and sandals, with ocean and bougainvillea behind.</p>
+          <div class="comparison-host"></div>
+        </article>
+
+
+        <article class="scene" data-scene="winter_closeup">
+          <h3>Winter Market · Looking Back, Holding Hands</h3>
+          <p class="prompt">A POV hand-holding shot: the character walks ahead and looks back at the viewer with a smile, through a snowy night Christmas market with wooden stalls, warm string lights, and falling snow.</p>
+          <div class="comparison-host"></div>
+        </article>
+
+        <article class="scene" data-scene="petite_studio">
+          <h3>Body Edit · Petite</h3>
+          <p class="prompt">An adult woman with a petite body, small breasts, and a slim waist, wearing a fitted navy turtleneck and beige high-waisted trousers in a neutral photo studio.</p>
+          <div class="comparison-host"></div>
+        </article>
+
+        <article class="scene" data-scene="curvy_studio">
+          <h3>Body Edit · Curvy</h3>
+          <p class="prompt">An adult woman with a curvy body, large breasts, and wide hips, wearing the same fitted navy turtleneck and beige high-waisted trousers in the same neutral photo studio.</p>
+          <div class="comparison-host"></div>
+        </article>
+
+        <aside class="protocol"><strong>Controlled protocol</strong>All images use the 500K checkpoint, 24 sampling steps, flow shift 3.0, CFG 4.5, and 1024×1024 output. Correct-reference and blank-reference cells use identical initial noise. Only the appearance clause and reference tensors change. The petite and curvy studio rows also share their noise, clothing, pose, and background so the body-shape words form a direct paired edit. CFG contrasts against Anima's standard negative prompt encoded by the same frozen text encoder—not against an empty caption. Training captions are tag lists in the format common to anime image communities, while the prompts here are natural sentences. The frozen Anima backbone reads both, and tag-level dropout trains the adapter to work from short prompts, so either format is usable at inference.</aside>
+      </div>
+    </section>
+
+    <section id="original-outfit">
+      <div class="wrap">
+        <h2>Original Outfit · Upper-body Pose Transfer</h2>
+        <p class="lead">The outfit stays faithful to each reference while the prompt requests a new upper-body pose. All outputs are waist-up with the legs cropped out.</p>
+        <div id="pose-gallery"></div>
+      </div>
+    </section>
+
+    <section class="alt" id="outfit-edit">
+      <div class="wrap">
+        <h2>Pose × Outfit Edit</h2>
+        <p class="lead">One pose prompt (kneeling, high-angle view, a lightly seductive finger-licking expression) with only the outfit clause swapped: the middle column keeps the reference outfit, the right column switches to a kimono. Both columns share the seed, so differences attribute to the outfit text.</p>
+        <p class="lead">The core capability this section demonstrates: with character identity preserved, any pose or action can be specified — including the kinds that online generation services censor or prohibit. This model is trained and run entirely locally, and identity transfer covers the full pose-and-action space.</p>
+        <div id="outfit-gallery"></div>
+      </div>
+    </section>
+
+    <section id="ablation">
+      <div class="wrap">
+        <h2>Component Toggles</h2>
+        <p class="lead">Same prompt and seed while components are switched off one at a time: the F₀/F₁ toggles control the reference-frame inputs, “CPM off” zeroes the identity-token gates, and “LoRA zeroed” clears the LoKr weights (other modules kept). The prompt deliberately contains no appearance description, so identity can only come from the components that remain.</p>
+        <div id="ablation-gallery"></div>
+        <p class="disclosure"><strong>Quantitative reading.</strong> The output change from disabling each component spans orders of magnitude: zeroing the LoRA collapses the image entirely (~100% of pixels change), blanking the reference frames changes about half the image, and switching CPM off changes under 9% of pixels without altering the identity readout; the frame-adapter gates stayed near zero throughout training. In the single-frame cells, F₁-only stays far closer to the full system than F₀-only (11–27% vs 25–48% changed pixels) — the full reference frame carries most of the identity, consistent with the earlier factorial finding that F₁ is the content pathway. Checkpoint-trend probing further shows CPM's inference contribution peaking mid-training and then receding to negligible; we read it as a transitional scaffold during training (an identity carrier while the anti-copy losses suppress the F₁ pathway) rather than a necessary inference component. These identity modules were each added in response to failures observed during development and retained (see Limitations); whether a minimal LoKr-plus-anti-copy-recipe configuration suffices remains to be verified by a from-scratch subtractive ablation — including a two-frame F₁-only variant that drops F₀ (cutting attention cost to roughly 4/9 and removing the head-detector dependency) — listed as future work.</p>
+      </div>
+    </section>
+
+    <section id="base-swap">
+      <div class="wrap">
+        <h2>Base-Model Portability</h2>
+        <p class="lead">The adapter was trained only on the official Anima Base v1.0. Here the frozen backbone is swapped wholesale for a community finetune (WAI ANIMA v10) while the LoKr, identity modules, and RoPE layout load unchanged — same 500K checkpoint, prompt, and seed — on a new half-body scene: a bust shot from slightly below, playful wink, finger heart, and a neon night-street bokeh background. Larger community-expanded Anima variants (2.9B/3B-class layer expansions of the official 2B base) have since appeared; whether the adapter carries over to those expanded architectures has not yet been verified.</p>
+        <div id="baseswap-gallery"></div>
+        <p class="disclosure"><strong>Reading.</strong> Reference identity transfer holds on both bases — slightly weaker on the WAI base than on the official one, but still clearly effective — while style, shading, and lighting follow the base. The LoKr and identity modules encode the reference-conditioning behavior as weight deltas, and swapping the base applies the same deltas to a different image prior; since the deltas were learned against the official weights, the further a base drifts from that origin the larger the application error, so a slight identity weakening is exactly what one would expect. Any community base that keeps Anima's architecture and tensor shapes works directly; both the official and ComfyUI weight-naming formats load as-is. This is a single-scene, single-seed qualitative demonstration; each base's actual suitability still needs individual verification.</p>
+      </div>
+    </section>
+
+    <section class="alt" id="findings">
+      <div class="wrap">
+        <h2>Qualitative Findings at 500K</h2>
+        <p class="lead">The controlled grid is intended for input attribution, not cherry-picked ranking. Because paired cells share initial noise, visible changes can be associated with the appearance clause, the image reference, or their interaction.</p>
+        <div class="findings-grid">
+          <article><strong>Appearance text supplies semantic structure.</strong><p>Text alone reliably introduces describable traits such as the rabbit ears and the forked horn. It cannot recover reference-specific fine ornamentation that was never named.</p></article>
+          <article><strong>The image supplies instance-level identity.</strong><p>Reference-only cells often inherit color layout, facial structure, or silhouette, but identity can weaken when the face occupies only a small part of the frame.</p></article>
+          <article><strong>The two signals are complementary.</strong><p>The appearance-plus-reference condition is generally the most stable: text disambiguates salient attributes while F₀/F₁ and CCIP conditioning provide visual details not captured by tags.</p></article>
+          <article><strong>Editing does not require copying composition.</strong><p>The same identities are rendered seated at a café, posing in close-up, and re-styled in the paired body edits, without reproducing the reference pose or the transparent-background layout of the source art.</p></article>
+          <article><strong>Interactive compositions follow from text.</strong><p>The POV hand-holding look-back at the winter market and the seaside feeding shot both work — from a front-facing reference, the model produces viewer-directed interaction poses and expressions.</p></article>
+          <article><strong>Body shape remains text-controllable.</strong><p>The petite and curvy rows share noise, clothing, pose, and background. Both characters show a clear chest and waist/hip change without requiring a different reference image.</p></article>
+        </div>
+        <p class="disclosure"><strong>Interpretation boundary.</strong> These are qualitative observations from one seed per row. They demonstrate supported behaviors and visible failure modes, but do not estimate success rates.</p>
+      </div>
+    </section>
+
+    <section id="diagnosis">
+      <div class="wrap">
+        <h2>Evidence from the Earlier Study</h2>
+        <p class="lead">Key measured conclusions from the earlier study that set the direction of the continuation training.</p>
+        <div class="facts">
+          <div class="fact"><strong>Whole-caption dropout</strong><p>A paired diagnostic recipe with whole-caption dropout began visibly copying around 10K steps, versus roughly 25K without it. Reference dropout also differed between the runs, so this is mechanism-consistent evidence rather than a single-variable ablation.</p></div>
+          <div class="fact"><strong>F₁ is the content path</strong><p>A 16-way factorial generator toggled LoKr, the reference conditioner, F₀, and F₁. Regional normalized cross-correlation localized near-verbatim lower-body pixels primarily to the full-reference frame F₁.</p></div>
+          <div class="fact"><strong>Near-duplicates are minor</strong><p>Loose-threshold near-duplicate pairs represented only about 0.4% of sampled same-character pairs. They are removed as a hygiene measure, but they cannot explain the earlier 41% human-labeled copy rate.</p></div>
+        </div>
+        <div class="table-wrap compact-table">
+          <table class="spec-table">
+            <thead><tr><th>Historical evaluation</th><th>Observation</th><th>What may be concluded</th></tr></thead>
+            <tbody>
+              <tr><td>22-reference benchmark at 80K</td><td>9/22 verbatim copies (41%)</td><td>The earlier recipe had a substantial shortcut problem.</td></tr>
+              <tr><td>Resume with diff weighting and a lower head-region loss weight at 105K</td><td>1/22 copies (4.5%)</td><td>Consistent with faster exit from the copy phase; not a single-variable causal result.</td></tr>
+              <tr><td>From-scratch validation run (planned 150K, stopped at 145K)</td><td>Copy phase peaked near 95K and collapsed after 100K</td><td>Training dynamics can also reduce copying without an intervention control.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="alt" id="comfyui">
+      <div class="wrap">
+        <h2>ComfyUI Deployment</h2>
+        <p class="lead">The model ships as a standalone ComfyUI plugin, <code>ComfyUI-AnimaRefLora</code>. You load a reference image, type a prompt, and get the same results as this report's evaluation pipeline.</p>
+
+        <div class="loss-box">
+          <h3>Why it does not use ComfyUI's own sampler</h3>
+          <p>ComfyUI's built-in Anima sampler only supports RoPE positions up to <code>max_h = 120</code>. Our model places the two reference frames and the target at deliberately separated positions (§3.4), which require a much larger coordinate range. Squeezing them back into 120 would force the frames onto overlapping coordinates and re-open the copy-and-paste path the training removed. So the plugin skips KSampler entirely and samples with the project's own inference loop, using the exact RoPE layout saved next to each checkpoint.</p>
+        </div>
+
+        <div class="technical-grid">
+          <article class="tech-card"><span class="tech-label">LOADER</span><h3>Anima RefLora Loader</h3><p>Loads everything as one bundle: the Anima base model, the trained LoKr weights, the identity modules, the RoPE layout, and the VAE. An optional node adds a regular Anima style LoRA on top.</p></article>
+          <article class="tech-card"><span class="tech-label">ENCODE</span><h3>Anima Ref Encode</h3><p>Takes the reference image, detects the head, and turns both the head crop and the full image into the two reference frames plus the CCIP identity embedding. Output size is chosen here in 64-pixel steps (1024×1024, 1024×576, 1152×768, …); the reference is letterboxed rather than cropped.</p></article>
+          <article class="tech-card"><span class="tech-label">SAMPLER</span><h3>Anima RefLora Sampler</h3><p>Generates the image with the project's own sampling loop—identical three-frame layout and guidance as in training. Without an extra style LoRA, outputs are bit-identical to the evaluation pipeline used on this page.</p></article>
+        </div>
+
+        <p>The node graph is simply <em>Load Image → Ref Encode → Sampler</em>, with the Loader supplying the model. A build script packs the plugin into a portable ~15&nbsp;MB folder containing the minimal inference code; models go into ComfyUI's usual <code>models/</code> folders. Inference is tested on a 32&nbsp;GB RTX&nbsp;5090 at 1024×1024; VRAM demand grows with output resolution. The plugin, code, and trained weights are publicly released; the weights are distributed via HuggingFace.</p>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap limitations">
+        <h2>Limitations</h2>
+        <p>The evaluation study is deliberately qualitative and small: two characters, four controlled edits, two original-outfit poses, and one seed per row. It separates inference inputs cleanly, but it is not an identity benchmark or a user study. The 500K model is a continuation run with several simultaneous changes, so this page does not attribute improvement to any one component. The reference images are AI-generated original designs rather than natural scene artwork, and the style of the generated references may itself influence output style. A full evaluation should add multiple seeds, blinded identity judgments, generated-to-reference CCIP scores, prompt-adherence metrics, copy detectors, and comparisons against encoder-based adapters.</p>
+        <p>A further caveat: the training recipe accumulated over the course of the project rather than being designed as a minimal set. Development prioritized reaching a usable model as quickly as possible, so improvements were stacked — new mechanisms were added onto the existing recipe and training continued — rather than tested in isolation through controlled experiments. Each mechanism was introduced in response to a specific failure mode observed at the time and retained once the problem subsided; the full stack has not been re-ablated top-down. Some components may therefore be redundant or overlap in effect; a leaner recipe might achieve the same result while needing fewer specialized mechanisms—and fewer terms to describe them. This page documents the system as trained, not the smallest recipe that works. The training data is sourced from Danbooru; the code, the ComfyUI plugin, and the trained weights are publicly released.</p>
+      </div>
+    </section>
+
+    <section id="references">
+      <div class="wrap references">
+        <h2>Selected References</h2>
+        <ol>
+          <li>CircleStone Labs and Comfy Org. <a href="https://huggingface.co/circlestone-labs/Anima" target="_blank" rel="noopener">Anima Base v1.0</a>, 2026.</li>
+          <li>Lipman et al. <a href="https://arxiv.org/abs/2210.02747" target="_blank" rel="noopener">Flow Matching for Generative Modeling</a>, 2023.</li>
+          <li>Liu, Gong, and Liu. <a href="https://arxiv.org/abs/2209.03003" target="_blank" rel="noopener">Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</a>, 2022.</li>
+          <li>Yeh et al. <a href="https://arxiv.org/abs/2309.14859" target="_blank" rel="noopener">Navigating Text-to-Image Customization: From LyCORIS Fine-Tuning to Model Evaluation</a>, 2024.</li>
+          <li>Yu et al. <a href="https://arxiv.org/abs/2410.06940" target="_blank" rel="noopener">Representation Alignment for Generation</a>, 2025.</li>
+          <li>Hwang et al. <a href="https://arxiv.org/abs/2506.09229" target="_blank" rel="noopener">Cross-Frame Representation Alignment for Fine-Tuning Video Diffusion Models</a>, 2025.</li>
+          <li>Dong and narugo1992. <a href="https://huggingface.co/deepghs/ccip" target="_blank" rel="noopener">Contrastive Anime Character Image Pre-Training (CCIP)</a>, 2024. Model card; no formal paper.</li>
+          <li>Su et al. <a href="https://arxiv.org/abs/2104.09864" target="_blank" rel="noopener">RoFormer: Enhanced Transformer with Rotary Position Embedding</a>, 2021 — the base RoPE; the disjoint per-frame layout is ours.</li>
+          <li>Esser et al. <a href="https://arxiv.org/abs/2403.03206" target="_blank" rel="noopener">Scaling Rectified Flow Transformers for High-Resolution Image Synthesis</a>, 2024 — source of the logit-normal σ sampler.</li>
+          <li>Luo et al. <a href="https://arxiv.org/abs/2307.02047" target="_blank" rel="noopener">CAME: Confidence-guided Adaptive Memory Efficient Optimization</a>, 2023 — the optimizer used throughout.</li>
+          <li>Ye et al. <a href="https://arxiv.org/abs/2308.06721" target="_blank" rel="noopener">IP-Adapter: Text Compatible Image Prompt Adapter for Text-to-Image Diffusion Models</a>, 2023 — closest prior work to our gated identity-token cross-attention.</li>
+          <li>Wang et al. <a href="https://arxiv.org/abs/2401.07519" target="_blank" rel="noopener">InstantID: Zero-shot Identity-Preserving Generation in Seconds</a>, 2024 — encoder-based identity adapter discussed in §3.3.</li>
+          <li>Xue et al. <a href="https://arxiv.org/abs/2508.07901" target="_blank" rel="noopener">Stand-In: A Lightweight and Plug-and-Play Identity Control for Video Generation</a>, 2025 — source of the Conditional Position Mapping (CPM) idea echoed by our disjoint RoPE layout; also where our module code name "CPM" originally came from.</li>
+          <li>Krawetz. <a href="https://www.hackerfactor.com/blog/index.php?/archives/529-Kind-of-Like-That.html" target="_blank" rel="noopener">Kind of Like That</a> (Hacker Factor Blog), 2013 — the difference hash (dHash), originally suggested by D. Oftedal.</li>
+          <li>kohya-ss. <a href="https://github.com/kohya-ss/sd-scripts" target="_blank" rel="noopener">sd-scripts</a> — training framework; the trainer builds on its Anima model loading and LoKr/LoRA network modules.</li>
+          <li>deepghs / narugo1992. <a href="https://github.com/deepghs/imgutils" target="_blank" rel="noopener">dghs-imgutils</a> — anime head detection and CCIP feature extraction used for the head crops and identity embeddings.</li>
+          <li>comfyanonymous and Comfy Org. <a href="https://github.com/comfyanonymous/ComfyUI" target="_blank" rel="noopener">ComfyUI</a> — the deployment platform for the plugin described above.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <h2>BibTeX</h2>
+        <pre>@misc{animareflora2026,
+  title  = {AnimaRefLoRA: Adding Reference-Based Character Identity
+            Transfer to the Anima Diffusion Transformer},
+  author = {{AnimaRefLoRA Project}},
+  year   = {2026},
+  note   = {Technical report}
+}</pre>
+      </div>
+    </section>
+  </main>
+
+  <footer><div class="wrap">Project-page structure inspired by <a href="https://ericguo5513.github.io/momask/" target="_blank" rel="noopener">MoMask</a> and <a href="https://nerfies.github.io/" target="_blank" rel="noopener">Nerfies</a>. All characters shown are AI-generated original designs. AI tools assisted in the development and theoretical analysis of this model.</div></footer>
+
+  <script>
+    const characters = [
+      { id: "oc_bunny", name: "OC · Rabbit Ears", ref: "oc_bunny.png", index: "00" },
+      { id: "oc_horns", name: "OC · Forked Horn", ref: "oc_horns.png", index: "01" }
+    ];
+    const cells = [
+      { label: "No appearance · No reference", path: (s,c) => `${s}/no_appearance/blank_${c.index}_${c.id}.png` },
+      { label: "Appearance · No reference", path: (s,c) => `${s}/with_appearance/${c.id}/blank_00_${c.id}.png` },
+      { label: "No appearance · Reference", path: (s,c) => `${s}/no_appearance/correct_${c.index}_${c.id}.png` },
+      { label: "Appearance · Reference", path: (s,c) => `${s}/with_appearance/${c.id}/correct_00_${c.id}.png` }
+    ];
+    for (const section of document.querySelectorAll("[data-scene]")) {
+      const scene = section.dataset.scene;
+      const host = section.querySelector(".comparison-host");
+      for (const character of characters) {
+        const article = document.createElement("article");
+        article.className = "comparison";
+        const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} reference"><figcaption>Reference input</figcaption></figure>`]
+          .concat(cells.map(cell => `<figure><img loading="lazy" src="assets/results/${cell.path(scene, character)}" alt="${character.name}: ${cell.label}"><figcaption>${cell.label}</figcaption></figure>`));
+        article.innerHTML = `<h4>${character.name}</h4><div class="compare-grid">${figures.join("")}</div>`;
+        host.append(article);
+      }
+    }
+    const poseGallery = document.querySelector("#pose-gallery");
+    const poses = [
+      { id: "wave", label: "Original outfit · Waving" },
+      { id: "crossed_arms", label: "Original outfit · Crossed arms" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} reference"><figcaption>Reference input</figcaption></figure>`]
+        .concat(poses.map(pose => `<figure><img loading="lazy" src="assets/results/original_outfit/${pose.id}/${character.id}/correct_00_${character.id}.png" alt="${character.name}: ${pose.label}"><figcaption>${pose.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="pose-grid">${figures.join("")}</div>`;
+      poseGallery.append(article);
+    }
+    const outfitGallery = document.querySelector("#outfit-gallery");
+    const outfits = [
+      { id: "original", label: "Reference outfit" },
+      { id: "kimono", label: "Kimono" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} reference"><figcaption>Reference input</figcaption></figure>`]
+        .concat(outfits.map(o => `<figure><img loading="lazy" src="assets/results/finger_licking/${o.id}/${character.id}/correct_00_${character.id}.png" alt="${character.name}: ${o.label}"><figcaption>${o.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="pose-grid">${figures.join("")}</div>`;
+      outfitGallery.append(article);
+    }
+    const baseswapGallery = document.querySelector("#baseswap-gallery");
+    const baseswapBases = [
+      { id: "anima_base", label: "Official Anima Base v1.0" },
+      { id: "wai_base", label: "WAI ANIMA v10 base" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} reference"><figcaption>Reference input</figcaption></figure>`]
+        .concat(baseswapBases.map(b => `<figure><img loading="lazy" src="assets/results/base_swap/${b.id}/${character.id}/correct_00_${character.id}.png" alt="${character.name}: ${b.label}"><figcaption>${b.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="pose-grid">${figures.join("")}</div>`;
+      baseswapGallery.append(article);
+    }
+    const ablationGallery = document.querySelector("#ablation-gallery");
+    const ablations = [
+      { dir: "baseline", tag: "", label: "Full system" },
+      { dir: "f0_only", tag: "head_only_", label: "F₀ only (head frame)" },
+      { dir: "f1_only", tag: "full_only_", label: "F₁ only (full frame)" },
+      { dir: "no_ref", tag: "blank_", label: "No reference frames" },
+      { dir: "cpm_off", tag: "", label: "CPM off" },
+      { dir: "lora_off", tag: "", label: "LoRA zeroed" }
+    ];
+    for (const character of characters) {
+      const article = document.createElement("article");
+      article.className = "comparison";
+      const figures = [`<figure><img loading="lazy" src="assets/references/${character.ref}" alt="${character.name} reference"><figcaption>Reference input</figcaption></figure>`]
+        .concat(ablations.map(a => `<figure><img loading="lazy" src="assets/results/ablation/${a.dir}/${character.id}/correct_${a.tag}00_${character.id}.png" alt="${character.name}: ${a.label}"><figcaption>${a.label}</figcaption></figure>`));
+      article.innerHTML = `<h3>${character.name}</h3><div class="ablation-grid">${figures.join("")}</div>`;
+      ablationGallery.append(article);
+    }
+  </script>
+</body>
+</html>

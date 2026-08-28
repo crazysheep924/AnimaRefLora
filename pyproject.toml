@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anima-reflora"
+version = "0.1.0"
+description = "Docker/RunPod training harness for Anima reference LoRA experiments."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["anima_reflora*"]
+
+[project.scripts]
+anima-reflora-train = "anima_reflora.train:main"
+anima-reflora-plan = "anima_reflora.train_plan:main"
+anima-reflora-preflight = "anima_reflora.preflight:main"
+anima-reflora-head-cache = "anima_reflora.head_cache:main"
+anima-reflora-head-ccip-cache = "anima_reflora.ccip_head_cache:main"
+anima-reflora-head-roi-cache = "anima_reflora.build_head_roi_cache:main"
+anima-reflora-ccip-cache = "anima_reflora.build_ccip_ref_cache:main"
+anima-reflora-training-cache = "anima_reflora.build_training_cache:main"
+anima-reflora-ref-use-eval = "anima_reflora.ref_use_eval:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["sd-scripts", ".git", ".pytest_cache", "__pycache__"]
