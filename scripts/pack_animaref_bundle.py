@@ -10,7 +10,7 @@ Usage:
 
 Examples:
   python scripts/pack_animaref_bundle.py \
-      RunpodTraining/experiments/headroi-rope-cpm-f1anticopy-idinject --latest \
+      RunpodTraining/experiments/<run> --latest \
       --name idinject_485k -o dist_models/idinject_485k.animaref.safetensors
 """
 from __future__ import annotations

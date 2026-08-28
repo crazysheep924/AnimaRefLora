@@ -1,5 +1,5 @@
 {
-  "checkpoint": "/work/RunpodTraining/experiments/headroi-rope-cpm-f1anticopy-idinject/checkpoints/lora_step_500000.safetensors",
+  "checkpoint": "idinject_500k.animaref.safetensors",
   "component_counts": {
     "cpm_gates_zeroed": 0,
     "frame_adapter_gates_zeroed": 0
@@ -26,7 +26,7 @@
       "condition": "correct",
       "index": 0,
       "name": "oc_bunny",
-      "path": "/work/blog/assets/results/finger_licking/kimono/oc_bunny/correct_00_oc_bunny.png",
+      "path": "assets/results/finger_licking/kimono/oc_bunny/correct_00_oc_bunny.png",
       "ref_frame_mode": "both",
       "reference_path": "/refs/oc_bunny/pick/0sample.png"
     }
@@ -47,7 +47,7 @@
       "name": "oc_bunny",
       "path": "/refs/oc_bunny/pick/0sample.png",
       "wrong_name": "wrong",
-      "wrong_path": "/work/RunpodTraining/wrong.jpg"
+      "wrong_path": "wrong.jpg"
     }
   ],
   "rope_layout_override": null,

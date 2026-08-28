@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--storage", type=Path, default=DEF_STORAGE, help="storage root mounted to /workspace/storage")
     ap.add_argument("--refs", type=Path, default=DEF_REFS, help="ref-image dir mounted to val/test")
     ap.add_argument("--image", default=DEF_IMAGE, help="docker image tag")
-    ap.add_argument("--run-subdir", default="", help="run folder under RunpodTraining/ holding checkpoints/ + generated/ (e.g. headroi-rope-cpm-editfix-100k-20260630-040642)")
+    ap.add_argument("--run-subdir", default="", help="run folder under RunpodTraining/ holding checkpoints/ + generated/ (e.g. my-run-20260101-000000)")
     ap.add_argument("--limit", type=int, default=5, help="number of ref characters (each -> correct/wrong/blank)")
     ap.add_argument("--steps", type=int, default=24)
     ap.add_argument("--guidance-scale", type=float, default=4.5)
