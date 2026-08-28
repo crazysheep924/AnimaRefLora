@@ -14,10 +14,14 @@ difference-weighted flow matching, near-duplicate-aware pairing, tag-level
 caption dropout, structured reference dropout, and anime-specific identity
 conditioning (CCIP prototype tokens + head-region representation alignment).
 
-📖 **Full technical report:** [blog/index.html](blog/index.html)
-([中文版](blog/index_zh.html)) — method, ablations, and a controlled
+[![Technical Report](https://img.shields.io/badge/📖_Technical_Report-English-2ea44f?style=for-the-badge)](https://crazysheep924.github.io/AnimaRefLora/)
+[![技術報告](https://img.shields.io/badge/📖_技術報告-中文版-blue?style=for-the-badge)](https://crazysheep924.github.io/AnimaRefLora/index_zh.html)
+[![Model Weights](https://img.shields.io/badge/🤗_Model_Weights-HuggingFace-yellow?style=for-the-badge)](https://huggingface.co/crazysheep924/AnimaRefLora)
+
+The technical report covers the method, ablations, and a controlled
 qualitative study of the 500K checkpoint on two AI-generated original
-characters.
+characters. (Source lives in [`blog/`](blog/) and is deployed via GitHub
+Pages.)
 
 ## Repository Layout
 
