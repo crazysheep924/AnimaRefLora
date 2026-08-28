@@ -9,8 +9,8 @@
 # Usage: see scripts/launch_f1anticopy_local5090.sh
 set -euo pipefail
 
-STORAGE="${ANIMA_REFLORA_STORAGE:-/workspace/storage}"
-OUT="${OUT:-/work/RunpodTraining}"
+STORAGE="${ANIMA_REFLORA_STORAGE:-/workspace}"
+OUT="${OUT:-/opt/AnimaRefLora/runs}"
 IMAGE_ROOT="${ANIMA_REFLORA_IMAGES:-${STORAGE}/dataset/images}"
 IMAGE_PREFIX="${ANIMA_REFLORA_IMAGE_PREFIX:-/path/to/dataset/images/}"
 CCIP_CACHE="${CCIP_CACHE:-${STORAGE}/runs/ccip_ref_head_emb_cache.pt}"
@@ -49,14 +49,16 @@ IDENTITY_INJECT_PROB="${IDENTITY_INJECT_PROB:-0.0}"
 
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"
 RUN_NAME="${RUN_NAME:-headroi-rope-cpm-f1anticopy-200k}"
-SOURCE_CKPT="${SOURCE_CKPT:-/work/RunpodTraining/headroi-rope-cpm-from0-diffw-20260703-060452/checkpoints/lora_step_145000.safetensors}"
+# SOURCE_CKPT: the 145K checkpoint from run_headroi_rope_cpm_from0_diffweight_150k.sh.
+SOURCE_CKPT="${SOURCE_CKPT:-}"
 if [ -z "${RESUME_CKPT:-}" ]; then
   latest="$(find "${OUT}/experiments/${RUN_NAME}/checkpoints" -maxdepth 1 -name 'lora_step_*.safetensors' 2>/dev/null | sort -V | tail -n 1 || true)"
   RESUME_CKPT="${latest:-${SOURCE_CKPT}}"
 fi
 
-if [ ! -f "${RESUME_CKPT}" ]; then
-  echo "ERROR: RESUME_CKPT not found: ${RESUME_CKPT}" >&2
+if [ -z "${RESUME_CKPT}" ] || [ ! -f "${RESUME_CKPT}" ]; then
+  echo "ERROR: RESUME_CKPT not found: '${RESUME_CKPT}'" >&2
+  echo "Set SOURCE_CKPT=<...>/checkpoints/lora_step_145000.safetensors (or RESUME_CKPT=...)" >&2
   exit 2
 fi
 if [ ! -f "${PAIR_DHASH_CACHE}" ]; then

@@ -7,7 +7,33 @@ name = "anima-reflora"
 version = "0.1.0"
 description = "Docker/RunPod training harness for Anima reference LoRA experiments."
 requires-python = ">=3.11"
-dependencies = []
+license = {file = "LICENSE"}
+# torch is intentionally loose: the Docker base image ships a CUDA build that
+# must not be clobbered. Pins for the full stack live in requirements.txt.
+dependencies = [
+    "torch>=2.8",
+    "accelerate>=1.6",
+    "dghs-imgutils>=0.19",
+    "diffusers>=0.32",
+    "einops>=0.7",
+    "ftfy>=6.3",
+    "huggingface-hub>=0.34",
+    "imagesize>=1.4",
+    "lycoris-lora>=3.4",
+    "numpy>=1.26,<2",
+    "opencv-python>=4.10",
+    "pandas>=2.2",
+    "pillow>=10",
+    "pyarrow>=16",
+    "rich>=13",
+    "safetensors>=0.4",
+    "sentencepiece>=0.2",
+    "tensorboard>=2.16",
+    "toml>=0.10",
+    "tqdm>=4.66",
+    "transformers>=4.54",
+    "voluptuous>=0.15",
+]
 
 [tool.setuptools.packages.find]
 include = ["anima_reflora*"]

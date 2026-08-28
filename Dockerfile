@@ -7,8 +7,6 @@ ARG APP_HOME=/opt/AnimaRefLora
 # Data lives directly at /workspace/_latcache, /workspace/runs, /workspace/anima_models, ...
 ARG STORAGE_ROOT=/workspace
 ARG PERSISTENT_ROOT=/workspace/Persistent
-ARG SD_SCRIPTS_REPO=https://github.com/kohya-ss/sd-scripts.git
-ARG SD_SCRIPTS_REF=c162e9039cc3228057b3fc6ae64ce770b87ab9bf
 ARG PYTHONUNBUFFERED=1
 ARG PIP_NO_CACHE_DIR=1
 ARG S3_ENDPOINT_URL=https://s3api-us-ca-2.runpod.io
@@ -17,7 +15,6 @@ ARG S3_URI=
 
 ENV PYTHONUNBUFFERED=${PYTHONUNBUFFERED} \
     PIP_NO_CACHE_DIR=${PIP_NO_CACHE_DIR} \
-    SD_SCRIPTS_COMMIT=${SD_SCRIPTS_REF} \
     ANIMA_REFLORA_REPO=${APP_HOME} \
     ANIMA_REFLORA_SD_SCRIPTS=${APP_HOME}/sd-scripts \
     ANIMA_REFLORA_STORAGE=${STORAGE_ROOT} \
@@ -67,11 +64,12 @@ COPY requirements.txt pyproject.toml README.md ./
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     PIP_NO_CACHE_DIR=false python -m pip install --upgrade pip setuptools wheel \
-    && PIP_NO_CACHE_DIR=false python -m pip install -r requirements.txt \
-    && git clone "${SD_SCRIPTS_REPO}" "${APP_HOME}/sd-scripts" \
-    && cd "${APP_HOME}/sd-scripts" \
-    && git checkout "${SD_SCRIPTS_REF}" \
-    && python -m pip install -e . \
+    && PIP_NO_CACHE_DIR=false python -m pip install -r requirements.txt
+
+# The vendored sd-scripts fork carries the Anima loader; upstream does not.
+COPY sd-scripts ./sd-scripts
+
+RUN python -m pip install -e "${APP_HOME}/sd-scripts" \
     && mkdir -p "${STORAGE_ROOT}" "${STORAGE_ROOT}/dataset" "${PERSISTENT_ROOT}/runs"
 
 COPY anima_reflora ./anima_reflora

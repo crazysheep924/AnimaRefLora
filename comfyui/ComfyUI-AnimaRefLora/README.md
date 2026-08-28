@@ -1,86 +1,101 @@
 # ComfyUI-AnimaRefLora
 
-AnimaRefLora 的 ComfyUI standalone 節點。生成固定走
-`anima_reflora.local_ref_ab_infer.sample_target()`，與 repo 的 REF 推論路徑相同，
-不使用 ComfyUI KSampler，因此不受 ComfyUI Anima RoPE `max_h=120` 限制。
+Standalone ComfyUI nodes for AnimaRefLora. Generation always goes through
+`anima_reflora.local_ref_ab_infer.sample_target()` — the same inference path
+as the training repo's REF evaluation. It does not use ComfyUI's KSampler,
+so it is not subject to ComfyUI's Anima RoPE `max_h=120` limit.
 
-## 節點流程
+## Install
 
-```text
-Anima Extra LoRA（可選） ─► Anima RefLora Loader ─┐
-                                                   ├─► Anima Ref Encode ─► Anima RefLora Sampler
-Load Image ────────────────────────────────────────┘
-```
-
-- **Anima Extra LoRA (standalone)**：可選的額外 Anima DiT LoRA。支援
-  `lora_unet_*.lora_down/up.weight` 格式；Text Encoder LoRA 不會套用。
-- **Anima RefLora Loader**：載入 base、RefLora/LoKr、ref conditioner、CPM、RoPE、VAE。
-- **Anima Ref Encode**：參照圖轉成頭部與全圖 reference latent，加上 CCIP identity。
-- **Anima RefLora Sampler**：使用 repo 相同的 RF sampling loop 生成圖片。
-
-輸出尺寸在 `Anima Ref Encode` 的 `generation_width`、`generation_height` 設定，兩者以
-64 pixels 為步進。例如：
-
-```text
-1024 × 1024  方形
-1024 × 576   橫向 16:9
-576 × 1024   直向 9:16
-1152 × 768   橫向 3:2
-768 × 1152   直向 2:3
-```
-
-尺寸越大，DiT attention 與 VAE 所需的 VRAM 越高。參照圖預設會 letterbox 到指定比例，
-避免為了配合輸出比例而裁掉角色邊緣。
-
-加上額外 LoRA 後，sampling 實作仍相同，但輸出當然不再與未加 LoRA 的 REF 評測逐位一致。
-
-## 建立與安裝
-
-從 repo 根目錄建立可攜式發佈包：
-
-```bash
-scripts/build_comfyui_plugin_dist.sh
-```
-
-將 `dist/ComfyUI-AnimaRefLora` 複製到：
+This folder is already a self-contained portable build (it vendors the
+minimal `anima_reflora/` and `sd-scripts/` subsets needed for inference).
+Copy it into ComfyUI and install the Python dependencies:
 
 ```text
 ComfyUI/custom_nodes/ComfyUI-AnimaRefLora
 ```
 
-發佈包已包含推論所需的 `anima_reflora/` 與 `sd-scripts/` 最小子集。安裝依賴；
-Windows portable 版例如：
-
 ```bat
+:: Windows portable example
 python_embeded\python.exe -m pip install -r custom_nodes\ComfyUI-AnimaRefLora\requirements.txt
 ```
 
-模型放置（**建議：單檔 bundle**）：
+(To regenerate this build from the source repo, run
+`scripts/build_comfyui_plugin_dist.sh` at the repo root; the output lands in
+`dist/ComfyUI-AnimaRefLora`.)
+
+## Model placement (recommended: single-file bundle)
 
 ```text
 models/diffusion_models/anima-base-v1.0.safetensors
-models/text_encoders/model.safetensors
+models/text_encoders/model.safetensors                    ← must be named model.safetensors
 models/vae/qwen_image_vae.safetensors
-models/anima_reflora/idinject_485k.animaref.safetensors   ← 一個檔＝整套 RefLora 模型
-models/loras/Anima/extra_style_lora.safetensors           ← （選用）一般風格 LoRA
+models/anima_reflora/<release>.animaref.safetensors       ← one file = the whole RefLora model
+models/loras/Anima/extra_style_lora.safetensors           ← (optional) regular style LoRA
 ```
 
-> 注意：目前僅在 Anima Base v1.0 上驗證。社群以層擴充放大的 Anima 變體
-> （2.9B／3B 級）是否支援尚未確認。
+- The text encoder is the Qwen3-0.6B base encoder; the loader resolves the
+  *directory* of the file you select and expects `model.safetensors` inside
+  it, so name (or symlink) the file exactly that.
+- The RefLora bundle (e.g. `idinject_500k.animaref.safetensors`) is
+  distributed via HuggingFace — see the root README's Model Weights section.
+  Drop it into `models/anima_reflora/`.
 
-`.animaref.safetensors` bundle 把 LoKr 權重、身分模組（ref_conditioner /
-crepa_projector）、feature 設定與 RoPE 配置打包成一個 safetensors；Loader 的
-`checkpoint` 下拉只列 `models/anima_reflora/` 裡的 bundle，選一個檔就完成，
-不會再有步數不成套的問題。bundle 由訓練端打包：
+> Note: verified on Anima Base v1.0 only. Support for the community
+> layer-expanded Anima variants (2.9B/3B-class) has not been confirmed.
+
+The `.animaref.safetensors` bundle packs the LoKr weights, the identity
+modules (ref_conditioner / crepa_projector), the feature config, and the
+RoPE layout into a single safetensors file. The Loader's `checkpoint`
+dropdown lists only the bundles in `models/anima_reflora/` — pick one file
+and everything matches; no mismatched-step problems. Bundles are packed on
+the training side:
 
 ```bash
 python scripts/pack_animaref_bundle.py <run_dir> --latest --name my_model \
     -o my_model.animaref.safetensors
 ```
 
-**Legacy 多檔格式仍支援**：若 `models/anima_reflora/` 沒有任何 bundle，下拉會
-退回列出 `models/loras/` 的 `lora_step_*.safetensors`，此時同目錄需放齊同步數的
-`ref_conditioner_step_*` / `crepa_projector_step_*` / `feature_config_step_*.json` /
-`rope_refpos_step_*.json`。
+**Legacy multi-file format is still supported**: if `models/anima_reflora/`
+contains no bundle, the dropdown falls back to `lora_step_*.safetensors`
+under `models/loras/`, and the same directory must then hold the
+matching-step `ref_conditioner_step_*` / `crepa_projector_step_*` /
+`feature_config_step_*.json` / `rope_refpos_step_*.json` files.
 
-一般額外 LoRA 由 `Anima Extra LoRA` 節點選擇並接到 Loader 的 `extra_lora`。
+## Node graph
+
+```text
+Anima Extra LoRA (optional) ─► Anima RefLora Loader ─┐
+                                                      ├─► Anima Ref Encode ─► Anima RefLora Sampler
+Load Image ───────────────────────────────────────────┘
+```
+
+- **Anima Extra LoRA (standalone)**: optional extra Anima DiT LoRA. Supports
+  the `lora_unet_*.lora_down/up.weight` format; text-encoder LoRAs are not
+  applied.
+- **Anima RefLora Loader**: loads the base model, RefLora/LoKr, ref
+  conditioner, CPM, RoPE layout, and VAE.
+- **Anima Ref Encode**: turns the reference image into head and full
+  reference latents plus the CCIP identity embedding.
+- **Anima RefLora Sampler**: generates with the same RF sampling loop as the
+  repo.
+
+Output size is set on `Anima Ref Encode` via `generation_width` /
+`generation_height`, both in steps of 64 pixels. Examples:
+
+```text
+1024 × 1024  square
+1024 × 576   landscape 16:9
+576 × 1024   portrait 9:16
+1152 × 768   landscape 3:2
+768 × 1152   portrait 2:3
+```
+
+Larger sizes need more VRAM for DiT attention and the VAE. The reference
+image is letterboxed to the target aspect ratio by default, so characters
+are not cropped to fit the output ratio.
+
+With an extra LoRA attached, the sampling implementation is unchanged, but
+outputs will of course no longer be bit-identical to the LoRA-free REF
+evaluation. Regular extra LoRAs are selected with the `Anima Extra LoRA`
+node and connected to the Loader's `extra_lora` input.

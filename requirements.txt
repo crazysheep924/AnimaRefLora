@@ -16,6 +16,7 @@ numpy==1.26.4
 onnxruntime==1.27.0
 opencv-python==4.10.0.84
 pandas==3.0.3
+pillow==11.3.0
 pyarrow==24.0.0
 prodigy-plus-schedule-free==1.9.2
 prodigyopt==1.1.2

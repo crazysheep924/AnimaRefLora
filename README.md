@@ -53,7 +53,7 @@ placement.
 ## Training
 
 The training harness targets Docker/RunPod. Model weights, datasets, latent
-caches, checkpoints, and credentials are mounted under `/workspace/storage`
+caches, checkpoints, and credentials are mounted under `/workspace`
 or synchronized at runtime — never baked into the image.
 
 ### Storage layout
@@ -62,12 +62,12 @@ Default paths can all be overridden with environment variables.
 
 - App: `/opt/AnimaRefLora`
 - Runs / caches (local): `/opt/AnimaRefLora/runs`
-- Storage (mounted/S3): `/workspace/storage`
-- Native latent cache: `/workspace/storage/_latcache`
-- Dataset (extracted): `/workspace/storage/dataset`
-- Base DiT: `/workspace/storage/anima_models/diffusion_models/anima-base-v1.0.safetensors`
-- Text encoder dir: `/workspace/storage/anima_models/text_encoders` (expects `qwen_3_06b_base.safetensors`)
-- VAE: `/workspace/storage/anima_models/vae/qwen_image_vae.safetensors`
+- Storage (mounted/S3): `/workspace`
+- Native latent cache: `/workspace/_latcache`
+- Dataset (extracted): `/workspace/dataset`
+- Base DiT: `/workspace/anima_models/diffusion_models/anima-base-v1.0.safetensors`
+- Text encoder dir: `/workspace/anima_models/text_encoders` (expects `qwen_3_06b_base.safetensors`)
+- VAE: `/workspace/anima_models/vae/qwen_image_vae.safetensors`
 
 ### Docker
 
@@ -82,7 +82,7 @@ Run a training stage:
 
 ```bash
 docker run --gpus all --rm -it \
-  -v /path/to/storage:/workspace/storage \
+  -v /path/to/storage:/workspace \
   anima-reflora-runpod:latest \
   train rope-smoke --batch 1 --tf32 --log-every 10 --no-viz --network lokr
 ```
@@ -91,7 +91,7 @@ Preflight before a cloud run:
 
 ```bash
 docker run --gpus all --rm -it \
-  -v /path/to/storage:/workspace/storage \
+  -v /path/to/storage:/workspace \
   anima-reflora-runpod:latest \
   preflight --stage cpm-short --cpm --ccip-cache /opt/AnimaRefLora/runs/ccip_ref_head_emb_cache.pt
 ```
@@ -150,29 +150,29 @@ Build the native training cache (latents + prompt tensors) from raw images:
 
 ```bash
 docker run --gpus all --rm -it \
-  -v /path/to/storage:/workspace/storage \
+  -v /path/to/storage:/workspace \
   anima-reflora-runpod:latest \
   training-cache \
-    --storage /workspace/storage \
-    --image-root /workspace/storage/dataset/images \
-    --metadata /workspace/storage/dataset/records.jsonl \
-    --output-cache /workspace/storage/_latcache
+    --storage /workspace \
+    --image-root /workspace/dataset/images \
+    --metadata /workspace/dataset/records.jsonl \
+    --output-cache /workspace/_latcache
 ```
 
 Then build the feature caches used by identity conditioning:
 
 ```bash
 # head-ROI masks for difference weighting / representation alignment
-docker run --gpus all --rm -it -v /path/to/storage:/workspace/storage \
+docker run --gpus all --rm -it -v /path/to/storage:/workspace \
   anima-reflora-runpod:latest \
-  head-roi-cache --storage /workspace/storage --image-root /workspace/storage/dataset/images
+  head-roi-cache --storage /workspace --image-root /workspace/dataset/images
 
 # per-character CCIP prototypes from detected head crops
-docker run --gpus all --rm -it -v /path/to/storage:/workspace/storage \
+docker run --gpus all --rm -it -v /path/to/storage:/workspace \
   anima-reflora-runpod:latest \
   head-ccip-cache \
-    --storage /workspace/storage \
-    --image-root /workspace/storage/dataset/images \
+    --storage /workspace \
+    --image-root /workspace/dataset/images \
     --output /opt/AnimaRefLora/runs/ccip_ref_head_emb_cache.pt
 ```
 
@@ -198,8 +198,29 @@ Existing run folders fail fast unless `--allow-existing-run` is set. Explicit
 `--resume` expects the matching `optimizer_step_<N>.pt` next to
 `lora_step_<N>.safetensors`; warm-start `--base-ckpt` skips missing sidecars.
 
-## License Notes
+## Release Checkpoint Provenance
+
+The released 500K bundle was trained in three chained stages, all with the
+committed scripts:
+
+1. **0 → ~145K**: `scripts/run_headroi_rope_cpm_from0_diffweight_150k.sh` —
+   from-scratch LoKr with difference-weighted flow matching, head-ROI CREPA,
+   CPM, and tag-level caption dropout.
+2. **145K → ~150K**: `scripts/run_from0_f1anticopy_resume.sh` with its
+   defaults — resumes the 145K checkpoint and adds the F1 anti-copy hinge
+   (weight 0.05, margin 0.35, σ cutoff 0.8) plus dhash-aware pairing.
+3. **150K → 500K**: the same resume script continued with identity-accessory
+   injection enabled: `IDENTITY_INJECT_PROB=0.8 STEPS=500000`, where the
+   injection map comes from `scripts/build_identity_inject_map.py`. All other
+   hyperparameters keep the script defaults.
+
+Intermediate evaluation in the report (275K, 485K) uses checkpoints of the
+same stage-3 run.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 `sd-scripts/` is a vendored fork of
-[kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts); its original
-license is preserved in `sd-scripts/LICENSE.md`.
+[kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts) (also
+Apache-2.0); its original license is preserved in `sd-scripts/LICENSE.md`.

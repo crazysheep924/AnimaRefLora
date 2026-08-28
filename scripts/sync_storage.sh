@@ -4,7 +4,7 @@ set -euo pipefail
 ACTION="${1:-}"
 # No default bucket: set S3_URI (or pass an s3-uri argument) explicitly.
 DEFAULT_S3_URI="${S3_URI:-}"
-DEFAULT_LOCAL="${ANIMA_REFLORA_STORAGE:-/workspace/storage}"
+DEFAULT_LOCAL="${ANIMA_REFLORA_STORAGE:-/workspace}"
 DEFAULT_OUT="${ANIMA_REFLORA_OUT:-/opt/AnimaRefLora/runs}"
 # Caches live on the persistent storage mount (see paths.py), NOT the ephemeral OUT.
 DEFAULT_CACHE_DIR="${ANIMA_REFLORA_CACHE_DIR:-${DEFAULT_LOCAL}/runs}"
