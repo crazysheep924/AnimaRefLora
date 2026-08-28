@@ -32,7 +32,9 @@ characters.
 
 ## Model Weights
 
-Weights are published on HuggingFace, not in this repo. The
+Weights are published on HuggingFace at
+[crazysheep924/AnimaRefLora](https://huggingface.co/crazysheep924/AnimaRefLora),
+not in this repo. The
 `idinject_500k.animaref.safetensors` bundle packs the LoKr adapter plus the
 identity conditioning modules; both the ComfyUI plugin and the local
 inference scripts consume it directly.

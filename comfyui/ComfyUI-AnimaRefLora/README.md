@@ -38,7 +38,8 @@ models/loras/Anima/extra_style_lora.safetensors           ← (optional) regular
   *directory* of the file you select and expects `model.safetensors` inside
   it, so name (or symlink) the file exactly that.
 - The RefLora bundle (e.g. `idinject_500k.animaref.safetensors`) is
-  distributed via HuggingFace — see the root README's Model Weights section.
+  distributed via HuggingFace:
+  [crazysheep924/AnimaRefLora](https://huggingface.co/crazysheep924/AnimaRefLora).
   Drop it into `models/anima_reflora/`.
 
 > Note: verified on Anima Base v1.0 only. Support for the community
