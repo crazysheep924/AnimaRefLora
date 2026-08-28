@@ -71,8 +71,9 @@ Anima Extra LoRA (optional) ─► Anima RefLora Loader ─┐
 Load Image ───────────────────────────────────────────┘
 ```
 
-- **Anima Extra LoRA (standalone)**: optional extra Anima DiT LoRA. Supports
-  the `lora_unet_*.lora_down/up.weight` format; text-encoder LoRAs are not
+- **Anima Extra LoRA (standalone)**: optional extra Anima DiT LoRA. Accepts
+  sd-scripts native `lora_unet_*.lora_down/up.weight` keys as well as
+  diffusers/PEFT-style keys, including DoRA files; text-encoder LoRAs are not
   applied.
 - **Anima RefLora Loader**: loads the base model, RefLora/LoKr, ref
   conditioner, CPM, RoPE layout, and VAE.

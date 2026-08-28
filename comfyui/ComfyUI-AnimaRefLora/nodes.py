@@ -65,43 +65,19 @@ _MODEL_CACHE: dict[tuple, dict] = {}
 
 
 def _apply_extra_lora(model, config, path: Path, strength: float, device, dtype):
-    """Attach one standard Anima DiT LoRA to the standalone model."""
+    """Merge one standard Anima DiT LoRA into this model instance's base weights.
+
+    Delegates to the shared inference path (merge_extra_loras), which accepts
+    sd-scripts native lora_unet_* keys as well as diffusers/PEFT-style keys and
+    DoRA files. The model is built fresh per loader cache key, so merging into
+    its weights does not leak into other cached bundles.
+    """
     from anima_reflora.sd_scripts_bridge import add_sd_scripts_to_path
 
     add_sd_scripts_to_path(config)
-    from networks import lora_anima
+    from anima_reflora.local_ref_ab_infer import merge_extra_loras
 
-    state = load_tensor_file(path)
-    dit_state = {k: v for k, v in state.items() if k.startswith("lora_unet_")}
-    if not dit_state or not any(".lora_down.weight" in k for k in dit_state):
-        raise ValueError(
-            f"Unsupported extra LoRA format: {path.name}. Expected standard Anima "
-            "lora_unet_*.lora_down/up.weight keys."
-        )
-    for key, value in list(dit_state.items()):
-        if key.endswith(".lora_down.weight"):
-            alpha_key = key.removesuffix(".lora_down.weight") + ".alpha"
-            dit_state.setdefault(alpha_key, torch.tensor(value.shape[0]))
-
-    dit = getattr(model, "dit", None)
-    if dit is None:
-        raise TypeError("Extra LoRA requires the sd-scripts Anima backend")
-    network, weights = lora_anima.create_network_from_weights(
-        strength, str(path), None, None, dit,
-        weights_sd=dit_state, for_inference=True,
-    )
-    if not network.unet_loras:
-        raise ValueError(f"Extra LoRA has no weights matching this Anima model: {path.name}")
-    network.apply_to(None, dit, apply_text_encoder=False, apply_unet=True)
-    result = network.load_state_dict(weights, strict=False)
-    missing_weights = [key for key in result.missing_keys if key.endswith(".weight")]
-    if result.unexpected_keys or missing_weights:
-        raise ValueError(
-            "Extra LoRA does not match this Anima model: "
-            f"unexpected={result.unexpected_keys[:3]}, missing={missing_weights[:3]}"
-        )
-    network.to(device=device, dtype=dtype).requires_grad_(False).eval()
-    model.extra_lora = network
+    merge_extra_loras(model, [(path, float(strength))], device)
 
 
 def _comfy_to_pil(image: torch.Tensor) -> Image.Image:

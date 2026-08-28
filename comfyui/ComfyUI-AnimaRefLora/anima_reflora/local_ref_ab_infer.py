@@ -22,7 +22,7 @@ from .build_training_cache import (
     make_head_image,
     resize_full_fill_crop,
 )
-from .checkpoints import load_checkpoint_into, load_sidecar_into
+from .checkpoints import load_checkpoint_into, load_sidecar_into, load_tensor_file
 from .config import ANIMA_DEFAULT_EVAL_PROMPT, ANIMA_NEGATIVE_PROMPT, parse_config
 from .features import CcipEmbeddingCache, feature_sidecar_path
 from .models import build_model, sidecar_modules
@@ -475,6 +475,144 @@ def condition_seed(base_seed: int, ref_index: int, condition: str, same_conditio
     return int(base_seed) + int(ref_index) * 100 + offset
 
 
+def parse_extra_lora_arg(value: str) -> tuple[Path, float]:
+    """Parse PATH[:MULT]. The trailing :MULT is optional; a colon that does not
+    parse as a float (e.g. the drive colon in E:/loras/x.safetensors) is kept
+    as part of the path."""
+    path_text, multiplier = value, 1.0
+    head, sep, tail = value.rpartition(":")
+    if sep:
+        try:
+            multiplier = float(tail)
+            path_text = head
+        except ValueError:
+            pass
+    return wsl_path(path_text), multiplier
+
+
+def normalize_extra_lora_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Accept sd-scripts native keys (lora_unet_<module>.lora_down.weight) as-is
+    and convert diffusers/peft-style keys (diffusion_model.<module.path>.lora_A.weight)
+    to that layout. peft files carry no alpha tensors, so a missing alpha is
+    synthesized as rank (scale 1.0)."""
+    if all(key.startswith(("lora_unet_", "lora_te")) or "." not in key for key in state):
+        return state
+    suffix_map = {"lora_A": "lora_down", "lora_B": "lora_up", "lora_down": "lora_down", "lora_up": "lora_up"}
+    converted: dict[str, torch.Tensor] = {}
+    for key, value in state.items():
+        base = key
+        for prefix in ("diffusion_model.", "transformer."):
+            if base.startswith(prefix):
+                base = base[len(prefix) :]
+                break
+        parts = base.split(".")
+        if parts[-1] == "alpha":
+            converted["lora_unet_" + "_".join(parts[:-1]) + ".alpha"] = value
+            continue
+        if len(parts) >= 3 and parts[-1] == "weight" and parts[-2] in suffix_map:
+            module = "_".join(parts[:-2])
+            converted[f"lora_unet_{module}.{suffix_map[parts[-2]]}.weight"] = value
+            continue
+        raise ValueError(f"Unsupported extra-LoRA key format: {key}")
+    for key in list(converted):
+        if key.endswith(".lora_down.weight"):
+            alpha_key = key[: -len(".lora_down.weight")] + ".alpha"
+            if alpha_key not in converted:
+                converted[alpha_key] = torch.tensor(float(converted[key].shape[0]))
+    return converted
+
+
+def _merge_dora_network(network: Any, weights_sd: dict[str, torch.Tensor], multiplier: float, device: torch.device) -> None:
+    """DoRA-aware merge (sd-scripts lora_anima has no dora_scale support).
+    W_dora = dora_scale * V / ||V||_row with V = W0 + (alpha/rank) * up@down,
+    then W' = W0 + multiplier * (W_dora - W0) (ComfyUI weight_decompose strength
+    semantics, so partial strength interpolates the decomposed result instead of
+    scaling the delta before normalisation)."""
+    for lora in network.unet_loras:
+        prefix = lora.lora_name + "."
+        sd = {key[len(prefix) :]: value for key, value in weights_sd.items() if key.startswith(prefix)}
+        org = lora.org_module
+        org_sd = org.state_dict()
+        w0 = org_sd["weight"].to(device=device, dtype=torch.float32)
+        down = sd["lora_down.weight"].to(device=device, dtype=torch.float32)
+        up = sd["lora_up.weight"].to(device=device, dtype=torch.float32)
+        alpha = float(sd["alpha"]) if "alpha" in sd else float(down.shape[0])
+        scale = alpha / down.shape[0]
+        if w0.dim() == 2:
+            delta = up @ down
+        elif down.shape[2:4] == (1, 1):
+            delta = (up.squeeze(3).squeeze(2) @ down.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+        else:
+            delta = torch.nn.functional.conv2d(down.permute(1, 0, 2, 3), up).permute(1, 0, 2, 3)
+        v = w0 + scale * delta
+        tail = [1] * (v.dim() - 1)
+        dora_scale = sd["dora_scale"].to(device=device, dtype=torch.float32).reshape(v.shape[0], *tail)
+        norm = v.reshape(v.shape[0], -1).norm(dim=1).clamp_min(1e-8).reshape(v.shape[0], *tail)
+        w_dora = dora_scale / norm * v
+        merged = w0 + multiplier * (w_dora - w0)
+        org_sd["weight"] = merged.to(dtype=org_sd["weight"].dtype, device=org_sd["weight"].device)
+        org.load_state_dict(org_sd)
+
+
+def merge_extra_loras(
+    model: torch.nn.Module,
+    specs: list[tuple[Path, float]],
+    device: torch.device,
+) -> list[dict[str, Any]]:
+    """Merge external Anima LoRAs directly into the frozen base DiT weights.
+    The trained LoKr network computes its delta on top of the (now merged) base,
+    so checkpoint adapter + extra LoRA compose additively."""
+    if not specs:
+        return []
+    dit = getattr(model, "dit", None)
+    if dit is None:
+        raise AttributeError("--extra-lora requires the sd-scripts Anima backend (model has no .dit)")
+    from networks import lora_anima  # sd-scripts is on sys.path after build_model
+
+    merged: list[dict[str, Any]] = []
+    for path, multiplier in specs:
+        if not path.exists():
+            raise FileNotFoundError(f"Extra LoRA not found: {path}")
+        state = normalize_extra_lora_state(load_tensor_file(path))
+        te_keys = [key for key in state if key.startswith("lora_te")]
+        if te_keys:
+            print(
+                f"[extra-lora] {path.name}: ignoring {len(te_keys)} text-encoder keys (captions are pre-encoded)",
+                flush=True,
+            )
+            state = {key: value for key, value in state.items() if not key.startswith("lora_te")}
+        network, weights_sd = lora_anima.create_network_from_weights(
+            multiplier, None, None, [], dit, weights_sd=state, for_inference=True
+        )
+        has_dora = any(key.endswith(".dora_scale") for key in weights_sd)
+        if has_dora:
+            _merge_dora_network(network, weights_sd, multiplier, device)
+        else:
+            network.merge_to([], dit, weights_sd, dtype=None, device=device)
+        if not network.unet_loras:
+            raise RuntimeError(f"Extra LoRA {path} matched no DiT modules (unsupported key format?)")
+        expected = len({key.split(".")[0] for key in weights_sd if "lora_down" in key})
+        if len(network.unet_loras) != expected:
+            print(
+                f"[extra-lora] WARNING {path.name}: {expected} modules in file but only "
+                f"{len(network.unet_loras)} matched the DiT",
+                flush=True,
+            )
+        info = {
+            "path": str(path),
+            "multiplier": multiplier,
+            "modules": len(network.unet_loras),
+            "dora": has_dora,
+        }
+        print(
+            f"[extra-lora] merged {path.name} x{multiplier} into base DiT "
+            f"({info['modules']} modules{', DoRA' if has_dora else ''})",
+            flush=True,
+        )
+        merged.append(info)
+    return merged
+
+
 def zero_lora_network(model: torch.nn.Module) -> int:
     network = getattr(model, "network", None)
     if network is None:
@@ -487,6 +625,26 @@ def zero_lora_network(model: torch.nn.Module) -> int:
             param.zero_()
             total += param.numel()
     return total
+
+
+def set_lora_multiplier(model: torch.nn.Module, multiplier: float) -> int:
+    """Scale the trained adapter network (LoKr) at runtime: every adapter module
+    applies `multiplier` to its delta in forward, so no weights are touched."""
+    network = getattr(model, "network", None)
+    if network is None:
+        network = getattr(getattr(model, "model", None), "network", None)
+    if network is None:
+        raise AttributeError("model has no LoRA network to scale")
+    if hasattr(network, "multiplier"):
+        network.multiplier = multiplier
+    count = 0
+    for module in network.modules():
+        if module is not network and hasattr(module, "multiplier"):
+            module.multiplier = multiplier
+            count += 1
+    if count == 0:
+        raise RuntimeError("no adapter modules with a multiplier attribute found")
+    return count
 
 
 def write_grid(rows: list[dict[str, Any]], out_path: Path, thumb: int = 256) -> None:
@@ -560,9 +718,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--rope-shift-override", type=float, help="Diagnostic RoPE shift used with --rope-layout-override.")
     parser.add_argument(
+        "--lora-multiplier",
+        type=float,
+        default=1.0,
+        help="Runtime strength of the trained adapter network (LoKr); 1.0 = as trained, 0.0 ~ --zero-lora.",
+    )
+    parser.add_argument(
         "--zero-lora",
         action="store_true",
         help="Ablate LoRA safely: load the checkpoint and sidecars, then zero only the LoRA network weights.",
+    )
+    parser.add_argument(
+        "--extra-lora",
+        action="append",
+        default=[],
+        metavar="PATH[:MULT]",
+        help="Merge an external Anima LoRA (sd-scripts lora_unet_* or diffusers lora_A/B keys) "
+        "into the base DiT before sampling; repeatable, optional :MULT strength (default 1.0).",
     )
     parser.add_argument(
         "--conditions",
@@ -663,7 +835,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     model = build_model(config, ccip_dim=ccip_dim).to(device=device, dtype=dtype)
     load_checkpoint_into(model, checkpoint, strict=False)
+    extra_lora_info = merge_extra_loras(model, [parse_extra_lora_arg(v) for v in args.extra_lora], device)
     zeroed_lora_params = zero_lora_network(model) if args.zero_lora else 0
+    if args.lora_multiplier != 1.0:
+        scaled = set_lora_multiplier(model, args.lora_multiplier)
+        print(f"[lora-multiplier] adapter network scaled to x{args.lora_multiplier} ({scaled} modules)", flush=True)
     for name, module in sidecar_modules(model).items():
         load_sidecar_into(module, checkpoint, name, strict=True)
     component_counts = set_ref_conditioner_components(
@@ -691,6 +867,8 @@ def main(argv: list[str] | None = None) -> int:
         "flow_shift": args.flow_shift,
         "guidance_scale": args.guidance_scale,
         "ref_frame_mode": args.ref_frame_mode,
+        "extra_loras": extra_lora_info,
+        "lora_multiplier": float(args.lora_multiplier),
         "zero_lora": bool(args.zero_lora),
         "zeroed_lora_params": int(zeroed_lora_params),
         "frame_adapter_on": bool(args.frame_adapter),
